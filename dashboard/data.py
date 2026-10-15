@@ -200,7 +200,12 @@ class ApiData:
         return r.json()
 
     def _sites(self):
-        return self.cache.get("sites", 60, lambda: {s["id"]: s for s in self._get("/v1/sites")})
+        def load():
+            try:
+                return {s["id"]: s for s in self._get("/v1/sites")}
+            except Exception:  # cloud sync not set up yet: cameras can still come through the relay
+                return {}
+        return self.cache.get("sites", 60, load)
 
     def api_id(self, ulb):
         if ulb in self.site_map:
@@ -217,8 +222,11 @@ class ApiData:
             return []
 
         def load():
-            rows = self._get("/v1/sites/%s/entries" % sid, **{"from": d0.isoformat(), "to": d1.isoformat(),
-                                                             "limit": 5000})
+            try:
+                rows = self._get("/v1/sites/%s/entries" % sid, **{"from": d0.isoformat(), "to": d1.isoformat(),
+                                                                 "limit": 5000})
+            except Exception:  # no records in the cloud for this plant (yet)
+                return []
             out = []
             for r in rows:
                 t = _parse_time(r.get("created_at"))
