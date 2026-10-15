@@ -18,7 +18,7 @@ import random
 import threading
 import time
 
-from .registry import BY_ID, OP_START, OPS
+from .registry import BY_ID, OP_START, OPS, SITE_IDS
 
 TZ = dt.timezone(dt.timedelta(minutes=330))  # India
 
@@ -210,6 +210,8 @@ class ApiData:
     def api_id(self, ulb):
         if ulb in self.site_map:
             return self.site_map[ulb]
+        if ulb in SITE_IDS:
+            return SITE_IDS[ulb]
         sites = self._sites()
         for cand in ("iswm-" + ulb, ulb):
             if cand in sites:

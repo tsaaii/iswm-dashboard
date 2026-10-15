@@ -34,7 +34,7 @@ PACKAGES = [
          com=["Kadapa", "Proddatur", "Jammalamadugu", "Pulivendula", "Mydukur", "Kamalapuram", "Badvel"],
          op=["Badvel", "Kamalapuram"], near=["Jammalamadugu"], lanc=[], protest=[], legacy=[], lna=["Yerraguntla"]),
     dict(n=8, ag="Thirumala Constructions", dy="Vara Prasad", tpd=380, ulb=6,
-         com=["Guntakal", "Kalyanadurgam", "Rayadurg", "Gooty"], op=[], near=[], lanc=["Tadipatri", "Anantapur"],
+         com=["Guntakal", "Kalyanadurgam", "Rayadurg", "Gooty", "Anantapur"], op=["Anantapur"], near=[], lanc=["Tadipatri"],
          protest=[], legacy=[], lna=[]),
     dict(n=9, ag="Lion Security Guards Services", dy="Vara Prasad", tpd=630, ulb=14,
          com=["Dharmavaram", "Puttaparthi", "Adoni", "Rajampet", "Rayachoty", "B.Kothakota", "Hindupur", "Madanapalli",
@@ -45,6 +45,8 @@ PACKAGES = [
          lanc=[], protest=[], legacy=[], lna=["Guduru (K)"]),
 ]
 AWARDED_TPD = 5385.21
+# plant site ids that don't follow "iswm-<ulb>" (the ULB's spelling differs from the plant's)
+SITE_IDS = {"anantapur": "iswm-ananthapur"}
 OP_START = "2026-07-18"  # first plants in operation
 STATUS_ORDER = ["op", "near", "wip", "lanc", "legacy", "protest", "lna"]
 

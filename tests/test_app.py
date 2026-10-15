@@ -22,7 +22,7 @@ def login(client, name, pw):
 
 def test_registry_matches_the_package_sheet():
     assert len(registry.ULBS) == 107 and len(registry.PACKAGES) == 10
-    assert sorted(registry.OPS) == ["badvel", "betamcherla", "kamalapuram", "kondapalli", "narsipatnam",
+    assert sorted(registry.OPS) == ["anantapur", "badvel", "betamcherla", "kamalapuram", "kondapalli", "narsipatnam",
                                     "nellore", "peddapuram", "yeleswaram"]
     assert registry.describe(registry.parse_scope("")) == ("All sites", "All 107 ULBs")
     assert registry.describe(registry.parse_scope("nellore")) == ("Site", "ISWM Nellore")
@@ -34,7 +34,7 @@ def test_public_landing_needs_no_login_and_shows_no_vehicles():
     c = create_app(DemoData()).test_client()
     assert c.get("/").status_code == 200
     d = c.get("/api/public/live").get_json()
-    assert len(d["hours"]) == 24 and sum(d["hours"]) == d["trips"] and len(d["ops"]) == 8 and d["total_ulbs"] == 107
+    assert len(d["hours"]) == 24 and sum(d["hours"]) == d["trips"] and len(d["ops"]) == 9 and d["total_ulbs"] == 107
     y = (dt.date.today() - dt.timedelta(days=1)).isoformat()
     one = c.get("/api/public/live?day=%s&ulb=nellore" % y).get_json()
     assert one["day"] == y and one["trips"] > 0
@@ -50,7 +50,7 @@ def test_login_and_scope_per_role():
     assert login(c, "admin", "wrong").status_code == 401
     assert login(c, "admin", "admin@sac").status_code == 302
     me = c.get("/api/me").get_json()
-    assert me["access"] == "All sites" and len(me["ulbs"]) == 107 and len(me["ops"]) == 8
+    assert me["access"] == "All sites" and len(me["ulbs"]) == 107 and len(me["ops"]) == 9
     s = create_app(DemoData()).test_client()
     login(s, "nellore.site", "admin@sac")
     me = s.get("/api/me").get_json()
@@ -61,7 +61,7 @@ def test_login_and_scope_per_role():
     assert s.get("/api/cams/badvel").status_code == 404 and s.get("/cam/badvel/front.mjpg").status_code == 404
     m = create_app(DemoData()).test_client()
     login(m, "dyee.varaprasad", "admin@sac")
-    assert m.get("/api/me").get_json()["ops"] == ["kamalapuram", "badvel", "betamcherla"]
+    assert m.get("/api/me").get_json()["ops"] == ["kamalapuram", "badvel", "anantapur", "betamcherla"]
 
 
 def test_trips_sync_cameras_and_limits():
