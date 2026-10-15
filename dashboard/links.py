@@ -54,6 +54,20 @@ def guess_ulb(site):
     return near[0] if near else None
 
 
+def _why(e):
+    """Plain words for why the relay couldn't be asked."""
+    name = type(e).__name__
+    text = str(e)
+    if "SSL" in name or "SSL" in text or "certificate" in text.lower():
+        return ("Secure connection to the relay failed (%s). Antivirus or a company proxy may be checking "
+                "HTTPS on this PC." % text[:120])
+    if "Timeout" in name:
+        return "The relay didn't answer in 8 seconds. It may be busy: restart it, or try again in a minute."
+    if "Proxy" in name or "proxy" in text.lower():
+        return "This PC's proxy blocked the relay: %s" % text[:120]
+    return "Can't reach the relay: %s" % text[:160]
+
+
 class Links:
     def __init__(self, fixed="", folder=None):
         self.folder = folder or os.environ.get("DASHBOARD_DATA") or os.path.join(os.getcwd(), "dashboard_data")
@@ -137,13 +151,30 @@ class Links:
             else:
                 d = r.json()
                 out = {"cams": d.get("cams") or [], "online": bool(d.get("plant_online")), "error": None}
-        except Exception:
-            out = {"cams": [], "online": False, "error": "Can't reach the relay. Check this PC's internet."}
+        except Exception as e:
+            out = {"cams": [], "online": False, "error": _why(e)}
         self._state[ulb] = (time.monotonic(), out)
         return out
 
     def camera(self, ulb, cam, quality):
+        """Pictures of one camera as a stream of JPEGs. Asks the relay for its newest picture once a
+        second (holds no relay connection open); relays older than that address get the MJPEG stream."""
+        import time
         l = self.get(ulb)
+        url = "/v1/sites/%s/live/%s.jpg" % (l["site"], cam)
+        first = self._get(l, url, params={"q": quality}, timeout=10)
+        if first.status_code in (200, 204):
+            def poll():
+                r, last = first, None
+                while True:
+                    if r.status_code == 200 and r.content != last:
+                        last = r.content
+                        yield r.content
+                    elif r.status_code not in (200, 204):
+                        return
+                    time.sleep(1.0)
+                    r = self._get(l, url, params={"q": quality}, timeout=10)
+            return poll()
         r = self._get(l, "/v1/sites/%s/live/%s.mjpg" % (l["site"], cam), params={"q": quality}, stream=True,
                       timeout=(10, 60))
         if r.status_code != 200:
