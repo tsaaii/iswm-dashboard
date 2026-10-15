@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block bodyattrs %} data-page="overview"{% endblock %}
+{% block content %}
+<div class="title-row">
+  <div>
+    <div class="kicker" id="today-label">Today</div>
+    <h1>All plants</h1>
+  </div>
+  <span class="spacer"></span>
+  <label class="search"><span class="sr">Find a plant</span><input id="find" type="search" placeholder="Find a plant…" autocomplete="off"></label>
+  <span class="muted small" id="updated"></span>
+</div>
+
+<section class="tiles" aria-label="Today, all plants">
+  <div class="tile"><span class="tile-k">Plants online</span><span class="tile-v" id="t-online">—</span><span class="tile-s" id="t-online-s"></span></div>
+  <div class="tile"><span class="tile-k"><i class="sw in"></i>Inward today</span><span class="tile-v" id="t-in">—</span><span class="tile-s" id="t-in-s"></span></div>
+  <div class="tile"><span class="tile-k"><i class="sw out"></i>Outward today</span><span class="tile-v" id="t-out">—</span><span class="tile-s" id="t-out-s"></span></div>
+  <div class="tile"><span class="tile-k">Waiting for empty weight</span><span class="tile-v" id="t-pend">—</span><span class="tile-s">trips not complete yet</span></div>
+</section>
+
+<section class="card">
+  <div class="table-scroll">
+  <table class="grid" id="sites">
+    <thead><tr>
+      <th>Plant</th><th>Status</th><th>Last sync</th>
+      <th class="r">Inward trips</th><th class="r">Inward</th><th class="r">Outward trips</th><th class="r">Outward</th>
+      <th class="r">Pending</th><th class="r">Cameras</th><th></th>
+    </tr></thead>
+    <tbody><tr><td colspan="10" class="muted">Loading…</td></tr></tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

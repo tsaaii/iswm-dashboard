@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ site.name }} · ISWM Dashboard{% endblock %}
+{% block bodyattrs %} data-page="site" data-site="{{ site.id }}"{% endblock %}
+{% block content %}
+<div class="title-row">
+  <a class="back" href="{{ url_for('overview') }}" aria-label="All plants">←</a>
+  <div>
+    <div class="kicker">{{ site.company }}</div>
+    <h1>{{ site.name }}</h1>
+  </div>
+  <span class="pill" id="plant-pill">…</span>
+  <span class="spacer"></span>
+  <div class="weight" title="Live weight on the weighbridge, from the plant">
+    <span class="tile-k">Weighbridge</span>
+    <span><span id="weight">—</span> <small>kg</small></span>
+    <span class="tile-s" id="weight-s"></span>
+  </div>
+</div>
+
+<section class="tiles" aria-label="Today at this plant">
+  <div class="tile"><span class="tile-k"><i class="sw in"></i>Inward today</span><span class="tile-v" id="s-in">—</span><span class="tile-s" id="s-in-s"></span></div>
+  <div class="tile"><span class="tile-k"><i class="sw out"></i>Outward today</span><span class="tile-v" id="s-out">—</span><span class="tile-s" id="s-out-s"></span></div>
+  <div class="tile"><span class="tile-k">Waiting for empty weight</span><span class="tile-v" id="s-pend">—</span><span class="tile-s">trips</span></div>
+  <div class="tile"><span class="tile-k">Last sync</span><span class="tile-v small-v" id="s-sync">—</span><span class="tile-s" id="s-sync-s"></span></div>
+</section>
+
+<section class="card" id="cams-card">
+  <div class="card-head">
+    <h2>Cameras</h2>
+    <div class="seg" id="cam-pick" role="group" aria-label="Which camera"></div>
+    <span class="spacer"></span>
+    <div class="seg" id="cam-q" role="group" aria-label="Picture quality">
+      <button data-q="low">Low data</button><button data-q="normal" class="on">Normal</button><button data-q="high">Sharper</button>
+    </div>
+    <button class="btn" id="cam-stop" hidden>Stop</button>
+  </div>
+  <div class="cam-grid" id="cam-grid"></div>
+  <p class="muted small" id="cam-note">Pictures come from the plant only while you watch. Pick a camera to start. A view stops by itself after 10 minutes to save data.</p>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Last 14 days</h2>
+    <div class="legend" aria-hidden="true"><span><i class="sw in"></i>Inward</span><span><i class="sw out"></i>Outward</span></div>
+    <span class="spacer"></span>
+    <button class="btn ghost" id="chart-table-toggle" aria-pressed="false">Show as table</button>
+  </div>
+  <div class="chart" id="chart" role="img" aria-label="Inward and outward tonnes per day for the last 14 days"></div>
+  <div class="tip" id="tip" hidden></div>
+  <div class="table-scroll" id="chart-table" hidden></div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Trips</h2>
+    <input type="date" id="trip-date" aria-label="Day">
+    <div class="seg" id="trip-dir" role="group" aria-label="Direction">
+      <button data-d="" class="on">All</button><button data-d="in">Inward</button><button data-d="out">Outward</button>
+    </div>
+    <label class="search"><span class="sr">Find a vehicle</span><input id="trip-find" type="search" placeholder="Vehicle or ticket…" autocomplete="off"></label>
+    <span class="spacer"></span>
+    <span class="muted small" id="trip-count"></span>
+  </div>
+  <div class="table-scroll tall">
+  <table class="grid" id="trips">
+    <thead><tr><th>Time</th><th>Ticket</th><th>Vehicle</th><th>What</th><th>From / to</th><th class="r">Gross</th><th class="r">Tare</th><th class="r">Net</th><th>Operator</th></tr></thead>
+    <tbody><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}
