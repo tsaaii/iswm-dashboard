@@ -1,0 +1,166 @@
+/* Design tokens from the ISWM Dashboard design (Tharuni Associates design system).
+   Palatino Linotype comes from the computer (Windows/macOS); no font files are shipped. */
+/* Tharuni Associates — color tokens */
+:root {
+  /* Base palette — drawn from the Tharuni logo */
+  --green-900: #0B3D22;
+  --green-800: #0E5230;
+  --green-700: #0F7A3E;
+  --green-600: #0FA14E; /* logo primary green */
+  --green-500: #17B45C;
+  --green-400: #57C97F;
+  --green-300: #7ED356; /* logo leaf green */
+  --green-200: #BFEBC9;
+  --green-100: #E4F6E9;
+  --green-050: #F2FBF4;
+
+  /* Sky — secondary accent (air, water, sky) */
+  --sky-600: #2380B8;
+  --sky-400: #6FB8DE;
+  --sky-100: #E7F3FA;
+
+  /* Earth neutrals — warm greys grounded in soil tones */
+  --ink-900: #121A14;   /* near-black with a green cast (logo wordmark) */
+  --ink-700: #33413A;
+  --ink-500: #5C6B62;
+  --ink-300: #9AA79F;
+  --ink-200: #CBD4CE;
+  --ink-100: #E8EDEA;
+  --ink-050: #F5F7F5;
+  --white: #FFFFFF;
+
+  /* Semantic */
+  --amber-600: #C77D1B;
+  --amber-100: #FBF0DD;
+  --red-600: #C2402F;
+  --red-100: #FAE8E4;
+
+  /* Semantic aliases */
+  --brand: var(--green-600);
+  --brand-strong: var(--green-700);
+  --brand-deep: var(--green-900);
+  --brand-leaf: var(--green-300);
+  --accent-sky: var(--sky-600);
+
+  --text-heading: var(--ink-900);
+  --text-body: var(--ink-700);
+  --text-muted: var(--ink-500);
+  --text-on-brand: var(--white);
+  --text-link: var(--green-700);
+  --text-link-hover: var(--green-900);
+
+  --surface-page: var(--white);
+  --surface-subtle: var(--green-050);
+  --surface-card: var(--white);
+  --surface-brand: var(--green-600);
+  --surface-deep: var(--green-900);
+
+  --border-default: var(--ink-200);
+  --border-subtle: var(--ink-100);
+  --border-brand: var(--green-600);
+
+  --state-success: var(--green-600);
+  --state-warning: var(--amber-600);
+  --state-danger: var(--red-600);
+
+  --focus-ring: 0 0 0 3px rgba(15, 161, 78, 0.30);
+}
+
+/* Tharuni Associates — typography tokens
+   Brand face: Palatino Linotype (system serif; no webfont files provided).
+   Stack falls through Palatino (macOS/iOS), Book Antiqua, URW Palladio. */
+:root {
+  --font-serif: "Palatino Linotype", Palatino, "Book Antiqua", "URW Palladio L", "Palatino LT STD", Georgia, serif;
+  --font-display: var(--font-serif);
+  --font-body: var(--font-serif);
+  --font-mono: "SF Mono", Consolas, Menlo, monospace;
+
+  /* Scale (rem, 16px base) */
+  --text-xs: 0.75rem;    /* 12 — captions, badges */
+  --text-sm: 0.875rem;   /* 14 — secondary UI */
+  --text-md: 1rem;       /* 16 — body */
+  --text-lg: 1.1875rem;  /* 19 — lede */
+  --text-xl: 1.5rem;     /* 24 — h3 */
+  --text-2xl: 2rem;      /* 32 — h2 */
+  --text-3xl: 2.75rem;   /* 44 — h1 */
+  --text-4xl: 4rem;      /* 64 — hero */
+  --text-5xl: 5.5rem;    /* 88 — slide hero */
+
+  --leading-tight: 1.08;
+  --leading-snug: 1.25;
+  --leading-body: 1.55;
+
+  --tracking-display: -0.015em;
+  --tracking-body: 0;
+  --tracking-caps: 0.14em;  /* uppercase labels, like the logo's ASSOCIATES bar */
+
+  --weight-regular: 400;
+  --weight-bold: 700;
+}
+
+/* Tharuni Associates — spacing, radii, shadows, motion */
+:root {
+  /* Spacing — 4px base */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+  --space-10: 128px;
+
+  /* Radii — soft, organic (echoes the circular logo) */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  /* Shadows — soft, diffuse, never harsh */
+  --shadow-sm: 0 1px 2px rgba(11, 61, 34, 0.08);
+  --shadow-md: 0 4px 12px rgba(11, 61, 34, 0.10);
+  --shadow-lg: 0 12px 32px rgba(11, 61, 34, 0.14);
+  --shadow-card: 0 1px 2px rgba(11, 61, 34, 0.06), 0 6px 20px rgba(11, 61, 34, 0.08);
+
+  /* Motion — calm, Apple-like */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1); /* @kind other */
+  --duration-fast: 150ms; /* @kind other */
+  --duration-base: 250ms; /* @kind other */
+  --duration-slow: 450ms; /* @kind other */
+}
+
+/* Tharuni Associates — base element styles */
+body {
+  font-family: var(--font-body);
+  color: var(--text-body);
+  background: var(--surface-page);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  color: var(--text-heading);
+  letter-spacing: var(--tracking-display);
+  line-height: var(--leading-snug);
+}
+a { color: var(--text-link); text-decoration-color: var(--green-300); }
+a:hover { color: var(--text-link-hover); }
+::selection { background: var(--green-200); }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--green-050);color:var(--ink-900);font-family:var(--font-serif);-webkit-font-smoothing:antialiased}
+a{color:var(--text-link)}a:hover{color:var(--text-link-hover)}
+button{font-family:inherit}
+button:disabled{opacity:.4;cursor:default}
+input:focus,select:focus{border-color:var(--green-600) !important;box-shadow:var(--focus-ring) !important}
+button:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+[hidden]{display:none!important}
+/* hover states the design marks with style-hover */
+.h-green7:hover{background:var(--green-700)!important}
+.h-ink050:hover{background:var(--ink-050)!important}
+.h-green050:hover{background:var(--green-050)!important}
+.h-textgreen7:hover{color:var(--green-700)!important}
+.h-row:hover{background:var(--green-050)}

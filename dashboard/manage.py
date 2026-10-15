@@ -21,7 +21,8 @@ def main(argv):
     if getpass.getpass("Password again: ") != pw:
         print("The two passwords are not the same.")
         return 1
-    print("\nAdd this to DASHBOARD_USERS (add @site-a|site-b at the end to limit the sites):\n")
+    print("\nAdd this to DASHBOARD_USERS. To limit what they see, add @nellore (one ULB), @pkg:1 (a package)\n"
+          "or @pkg:7|8|9|10 (packages); add #Shown name at the very end for the top bar:\n")
     print("%s:%s" % (name, hash_password(pw)))
     return 0
 

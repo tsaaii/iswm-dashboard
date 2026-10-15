@@ -1,21 +1,24 @@
-"""Where the dashboard gets its numbers and pictures.
+"""Where the dashboard gets its trips, sync times and camera pictures.
 
-Two sources with the same methods:
+* DemoData - made-up trips for the operational ULBs (same rules as the design prototype), and
+             moving test pictures. Used when no ISWM API address is set.
+* ApiData  - the real ISWM shared API on Cloud Run (repo tsaaii/ISWM, folder cloud_api): trips
+             from Firestore, sync times, and camera pictures through its relay.
 
-* DemoData  - made-up sites, trips and moving camera pictures. Used when no
-              ISWM API address is set, so the dashboard can be tried at once.
-* ApiData   - the real ISWM shared API on Cloud Run (the repo tsaaii/ISWM,
-              folder cloud_api). Records come from Firestore through it, and the
-              camera pictures come through its relay from the plant PC.
-
+A trip, as the pages use it:
+    {site, date "YYYY-MM-DD", min (minute of the day), veh, dir "IN"|"OUT", mat, gross, tare, net, dest, ticket}
+tare and net are None while the empty weight is pending.
 The browser never talks to the ISWM API itself: the API key stays on this server.
 """
 import datetime as dt
 import hashlib
 import io
+import os
 import random
 import threading
 import time
+
+from .registry import BY_ID, OP_START, OPS
 
 TZ = dt.timezone(dt.timedelta(minutes=330))  # India
 
@@ -24,12 +27,15 @@ def today():
     return dt.datetime.now(TZ).date()
 
 
-def _rng(*parts):
-    return random.Random(int(hashlib.sha256("|".join(map(str, parts)).encode()).hexdigest()[:12], 16))
+def days(a, b):
+    d = a
+    while d <= b:
+        yield d
+        d += dt.timedelta(days=1)
 
 
 class Cache:
-    """Small time-limited cache, so many people looking at the dashboard don't multiply API (and Firestore) reads."""
+    """Small time-limited cache, so many viewers don't multiply API (and Firestore) reads."""
 
     def __init__(self):
         self._d, self._lock = {}, threading.Lock()
@@ -46,142 +52,99 @@ class Cache:
         return value
 
 
-# --- demo -----------------------------------------------------------------------------------
-
-DEMO_SITES = [
-    ("iswm-donthali", "ISWM Donthali", "Lions Group", ["Front cam", "Back cam", "Tipping floor", "Windrow yard"]),
-    ("iswm-kadiri", "ISWM Kadiri", "Lions Group", ["Front cam", "Back cam", "Tipping floor"]),
-    ("iswm-guntur", "ISWM Guntur", "Tharuni Associates", ["Front cam", "Back cam", "Windrow yard", "RDF shed"]),
-    ("iswm-nellore", "ISWM Nellore", "Tharuni Associates", ["Front cam", "Back cam"]),
-    ("iswm-ongole", "ISWM Ongole", "Lions Group", ["Front cam", "Back cam", "Tipping floor"]),
-    ("iswm-tirupati", "ISWM Tirupati", "Tharuni Associates", ["Front cam", "Back cam", "Tipping floor", "Compost yard"]),
-    ("iswm-kurnool", "ISWM Kurnool", "Lions Group", ["Front cam", "Back cam"]),
-    ("iswm-anantapur", "ISWM Anantapur", "Lions Group", ["Front cam", "Back cam", "Tipping floor"]),
-]
-OFFLINE = {"iswm-kurnool"}  # one site shown offline, as happens in real life
-# and a couple with problems, so the status board has something to show
-DEMO_TROUBLE = {"iswm-guntur": {"wb": False}, "iswm-tirupati": {"cam_problems": ["Compost yard"]}}
-IN_TYPES = ["Mixed", "Mixed", "Mixed", "Wet", "Dry"]
-SOURCES = ["Residential", "Residential", "Commercial"]
-MATERIALS = [("Compost", "Farmer buyer"), ("RDF bales", "Ultratech cement"), ("Recyclables", "Sri Sai traders"),
-             ("Disposal", "Landfill cell 2")]
+def _rng(*parts):
+    return random.Random(int(hashlib.sha256("|".join(map(str, parts)).encode()).hexdigest()[:12], 16))
 
 
-def _cam_ids(names):
-    ids = ["front", "back"] + ["cam%d" % i for i in range(3, 9)]
-    return [[ids[i], n] for i, n in enumerate(names)]
+# --- demo -------------------------------------------------------------------------------------
+
+PROFILE = [.2, .1, .1, .1, .3, 1, 2.2, 3, 3.2, 2.8, 2.2, 1.6, 1.2, 1, 1.2, 1.8, 2, 1.6, 1, .6, .4, .3, .2, .2]
+DEST = {"RDF": "Cement plant · RDF co-processing", "Compost": "Compost buyers · farmer groups",
+        "Recyclables": "Authorised recyclers", "Inerts": "Sanitary landfill"}
+NET_OUT = {"RDF": (6, 12), "Compost": (3, 8), "Recyclables": (2, 6), "Inerts": (6, 10)}
+DEMO_CAMS = ["Weighbridge · entry", "Weighbridge · exit", "Tipping floor", "Windrow yard"]
 
 
 class DemoData:
     demo = True
 
-    def __init__(self):
-        self.sites_by_id = {s[0]: s for s in DEMO_SITES}
+    def _vehicles(self, sid):
+        r = _rng("veh", sid)
+        L = "ABCDEFGHJKLMNPRTUVWXZ"
+        st = "%02d" % (10 + int(hashlib.md5(sid.encode()).hexdigest(), 16) % 30)
+        return ["AP %s %s%s %d" % (st, r.choice(L), r.choice(L), r.randint(1000, 9999)) for _ in range(10)]
 
-    def _vehicles(self, site):
-        r = _rng(site, "fleet")
-        return ["AP %02d %s %04d" % (r.choice([3, 21, 26, 39, 2]), r.choice(["TA", "TB", "UA", "Z", "TC"]), r.randint(1000, 9999))
-                for _ in range(14)]
-
-    def trips(self, site, day_from, day_to):
-        """Every trip between two dates (newest first), made up but the same every time for a date."""
-        if site not in self.sites_by_id:
+    def _day(self, sid, d):
+        ds = d.isoformat()
+        if ds < OP_START or sid not in BY_ID:
             return []
-        fleet = self._vehicles(site)
-        out, d = [], day_from
         now = dt.datetime.now(TZ)
-        while d <= day_to:
-            r = _rng(site, d.isoformat())
-            n_in = r.randint(28, 46) if d.weekday() != 6 else r.randint(12, 20)
-            seq_in = seq_out = 0
-            for i in range(n_in + r.randint(4, 9)):
-                t = dt.datetime.combine(d, dt.time(6, 0), TZ) + dt.timedelta(minutes=r.randint(0, 15 * 60))
-                if t > now:
-                    continue
-                vno = r.choice(fleet)
-                if i < n_in:
-                    seq_in += 1
-                    src = r.choice(SOURCES)
-                    tare = r.randint(55, 90) * 100
-                    net = r.randint(18, 75) * 100
-                    pending = d == today() and now - t < dt.timedelta(minutes=40) and r.random() < 0.6
-                    out.append({"id": "IN%s%s%04d" % ("C" if src == "Commercial" else "R", d.strftime("%y%m"), seq_in),
-                                "dir": "in", "vno": vno, "time": t.isoformat(timespec="minutes"),
-                                "what": r.choice(IN_TYPES), "where": src, "gross_kg": tare + net,
-                                "tare_kg": None if pending else tare, "net_kg": None if pending else net,
-                                "operator": r.choice(["Ramesh K.", "Lakshmi P.", "Suresh B."])})
-                else:
-                    seq_out += 1
-                    mat, dest = r.choice(MATERIALS)
-                    tare = r.randint(55, 90) * 100
-                    net = r.randint(20, 90) * 100
-                    out.append({"id": "O%s%04d" % (d.strftime("%y%m"), seq_out), "dir": "out", "vno": vno,
-                                "time": t.isoformat(timespec="minutes"), "what": mat, "where": dest,
-                                "gross_kg": tare + net, "tare_kg": tare, "net_kg": net,
-                                "operator": r.choice(["Ramesh K.", "Lakshmi P.", "Suresh B."])})
-            d += dt.timedelta(days=1)
-        out.sort(key=lambda x: x["time"], reverse=True)
-        return out
-
-    def _totals(self, rows):
-        done = [x for x in rows if x["net_kg"] is not None]
-        hours = {"in": [0] * 24, "out": [0] * 24}
-        for x in rows:
-            hours[x["dir"]][int(x["time"][11:13])] += 1
-        return {"in_by_hour": hours["in"], "out_by_hour": hours["out"],"in_trips": sum(1 for x in done if x["dir"] == "in"),
-                "in_kg": sum(x["net_kg"] for x in done if x["dir"] == "in"),
-                "out_trips": sum(1 for x in done if x["dir"] == "out"),
-                "out_kg": sum(x["net_kg"] for x in done if x["dir"] == "out"),
-                "pending": sum(1 for x in rows if x["net_kg"] is None)}
-
-    def sites(self):
-        out, now = [], dt.datetime.now(TZ)
-        for sid, name, company, cams in DEMO_SITES:
-            r = _rng(sid, now.strftime("%Y%m%d%H"))
-            offline = sid in OFFLINE
-            last = now - (dt.timedelta(hours=5, minutes=r.randint(0, 50)) if offline else dt.timedelta(minutes=r.randint(1, 10)))
-            status = None if offline else {"ver": "1.5.0", "wb": True, "kg": 0, "stable": True, "cams": len(cams),
-                                           "cam_problems": [], "queued": r.randint(0, 6), "sync": "synced",
-                                           "operator": r.choice(["Ramesh K.", "Lakshmi P.", "Suresh B."]),
-                                           **DEMO_TROUBLE.get(sid, {})}
-            seen = None if offline else now - dt.timedelta(seconds=r.randint(2, 25))
-            out.append({"id": sid, "name": name, "company": company, "online": not offline,
-                        "last_sync": last.isoformat(timespec="minutes"), "cameras": _cam_ids(cams),
-                        "today": {"date": today().isoformat(), **self._totals(self.trips(sid, today(), today()))},
-                        "health": health(not offline, seen or last, status)})
-        return out
-
-    def site(self, sid):
-        return next((s for s in self.sites() if s["id"] == sid), None)
-
-    def daily(self, sid, days=14):
+        cutoff = now.hour * 60 + now.minute if d == now.date() else 1440
+        r, u, V = _rng(sid, ds), BY_ID[sid], self._vehicles(sid)
         out = []
-        for i in range(days - 1, -1, -1):
-            d = today() - dt.timedelta(days=i)
-            out.append({"date": d.isoformat(), **self._totals(self.trips(sid, d, d))})
+
+        def minute():
+            x = r.random() * sum(PROFILE)
+            for h, p in enumerate(PROFILE):
+                x -= p
+                if x <= 0:
+                    return h * 60 + r.randint(0, 59)
+            return 23 * 60
+        n_in = max(4, round(u["cap"] * (.8 + .35 * r.random()) / 3.2))
+        for _ in range(n_in):
+            m, veh = minute(), r.choice(V)
+            net, tare = round(1.8 + r.random() * 3.4, 2) * 1000, round((4200 + r.random() * 3400) / 10) * 10
+            x, q = r.random(), r.random()
+            mat = "Mixed" if x < .55 else "Wet" if x < .85 else "Dry"
+            if m > cutoff:
+                continue
+            inc = (cutoff - m < 30 and q < .6) if cutoff < 1440 else q < .012
+            out.append({"site": sid, "date": ds, "min": m, "veh": veh, "dir": "IN", "mat": mat, "gross": tare + net,
+                        "tare": None if inc else tare, "net": None if inc else net, "dest": ""})
+        for _ in range(max(1, round(n_in * .18))):
+            m, x = 330 + r.randint(0, 869), r.random()
+            mat = "RDF" if x < .35 else "Compost" if x < .55 else "Recyclables" if x < .8 else "Inerts"
+            a, b = NET_OUT[mat]
+            net, tare, veh, q = round(a + r.random() * (b - a), 2) * 1000, round((6500 + r.random() * 3000) / 10) * 10, \
+                r.choice(V), r.random()
+            if m > cutoff:
+                continue
+            inc = (cutoff - m < 30 and q < .5) if cutoff < 1440 else q < .01
+            out.append({"site": sid, "date": ds, "min": m, "veh": veh, "dir": "OUT", "mat": mat, "gross": tare + net,
+                        "tare": None if inc else tare, "net": None if inc else net, "dest": DEST[mat]})
+        out.sort(key=lambda t: t["min"])
+        n = {"IN": 0, "OUT": 0}
+        for t in out:
+            n[t["dir"]] += 1
+            t["ticket"] = ("INR" if t["dir"] == "IN" else "O") + d.strftime("%y%m%d") + "%02d" % n[t["dir"]]
         return out
 
-    def live_state(self, sid):
-        s = self.sites_by_id.get(sid)
-        if not s:
-            return None
-        online = sid not in OFFLINE
-        w = int(7200 + 1800 * __import__("math").sin(time.time() / 9)) // 10 * 10
-        return {"plant_online": online, "cams": _cam_ids(s[3]),
-                "weight": {"connected": online, "weight": w, "stable": int(time.time()) % 6 < 4} if online else None}
+    def trips(self, ids, day_from, day_to):
+        out = []
+        for d in days(day_from, min(day_to, today())):
+            for sid in ids:
+                out.extend(self._day(sid, d))
+        return out
+
+    def sync_minutes(self, ids):
+        """Minutes since each plant last synced (one plant is behind, as happens in real life)."""
+        return {sid: 140 if sid == "kamalapuram" else 1 + _rng("sy", sid).randint(0, 8) for sid in ids}
+
+    def cameras(self, sid):
+        return [["front", DEMO_CAMS[0]], ["back", DEMO_CAMS[1]], ["cam3", DEMO_CAMS[2]], ["cam4", DEMO_CAMS[3]]] \
+            if sid in OPS else []
 
     def camera(self, sid, cam, quality):
         """Endless moving test pictures, as an MJPEG stream. Nothing real; only to see the layout."""
-        s = self.sites_by_id.get(sid)
-        names = dict(_cam_ids(s[3])) if s else {}
-        if cam not in names or sid in OFFLINE:
+        names = dict(self.cameras(sid))
+        if cam not in names:
             return None
         width = {"low": 480, "normal": 640, "high": 960}.get(quality, 640)
 
         def gen():
             end = time.monotonic() + 600
             while time.monotonic() < end:
-                jpg = _demo_frame(s[1], names[cam], width)
+                jpg = _demo_frame("ISWM " + BY_ID[sid]["name"], names[cam], width)
                 yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpg)).encode() + \
                     b"\r\n\r\n" + jpg + b"\r\n"
                 time.sleep(0.5)
@@ -193,15 +156,14 @@ def _demo_frame(site, label, width):
     h = width * 9 // 16
     img = Image.new("RGB", (width, h), (86, 110, 80))
     d = ImageDraw.Draw(img)
-    d.rectangle([0, h * 2 // 3, width, h], fill=(120, 120, 112))  # road
+    d.rectangle([0, h * 2 // 3, width, h], fill=(120, 120, 112))
     x = int((time.time() * 60) % (width + 200)) - 200
-    d.rectangle([x, h * 2 // 3 - 70, x + 150, h * 2 // 3 - 10], fill=(27, 138, 58))  # truck body
-    d.rectangle([x + 150, h * 2 // 3 - 50, x + 190, h * 2 // 3 - 10], fill=(242, 194, 0))  # cab
+    d.rectangle([x, h * 2 // 3 - 70, x + 150, h * 2 // 3 - 10], fill=(15, 161, 78))
+    d.rectangle([x + 150, h * 2 // 3 - 50, x + 190, h * 2 // 3 - 10], fill=(242, 194, 0))
     for cx in (x + 30, x + 120, x + 170):
         d.ellipse([cx - 12, h * 2 // 3 - 22, cx + 12, h * 2 // 3 + 2], fill=(21, 21, 21))
     d.rectangle([0, 0, width, 26], fill=(18, 26, 20))
-    d.text((10, 7), "DEMO  %s - %s  %s" % (site, label, dt.datetime.now(TZ).strftime("%d-%m-%Y %H:%M:%S")),
-           fill=(255, 255, 255))
+    d.text((10, 7), "DEMO  %s - %s" % (site, label), fill=(255, 255, 255))
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=70)
     return buf.getvalue()
@@ -209,110 +171,103 @@ def _demo_frame(site, label, width):
 
 # --- real ISWM API ------------------------------------------------------------------------------
 
+# the plant app's outward materials, grouped the way the dashboard reports them
+OUT_GROUP = {"rdf bales": "RDF", "rdf": "RDF", "compost": "Compost", "recyclables": "Recyclables",
+             "metal scrap": "Recyclables", "glass scrap": "Recyclables", "non recyclables": "Inerts",
+             "disposal": "Inerts", "inerts": "Inerts"}
+
+
 class ApiData:
-    """Reads the ISWM shared API (cloud_api). Needs its address and an API key made for the dashboard."""
+    """Reads the ISWM shared API (cloud_api). Needs its address and an API key made for the dashboard.
+
+    ULBs are matched to plant site ids by name: ULB "Nellore" is plant site "iswm-nellore" (the
+    plant app's default) or "nellore". SITE_MAP="nellore=my-site-id,badvel=..." overrides that.
+    """
     demo = False
 
-    def __init__(self, url, key):
+    def __init__(self, url, key, site_map=None):
         import requests
         self.url, self.key = url.rstrip("/"), key
         self.http = requests.Session()
         self.http.headers["X-API-Key"] = key
         self.cache = Cache()
+        self.site_map = dict(x.split("=", 1) for x in (site_map if site_map is not None
+                                                        else os.environ.get("SITE_MAP", "")).split(",") if "=" in x)
 
     def _get(self, path, **params):
-        r = self.http.get(self.url + path, params=params, timeout=20)
+        r = self.http.get(self.url + path, params=params, timeout=30)
         r.raise_for_status()
         return r.json()
 
-    def relay_status(self):
-        """Every plant's live check-in from the relay (one call; the relay keeps it in memory)."""
-        def load():
-            try:
-                return self._get("/v1/live/status")
-            except Exception:
-                return {}  # older relay, or relay down: fall back to sync times
-        return self.cache.get("relay-status", 15, load)
+    def _sites(self):
+        return self.cache.get("sites", 60, lambda: {s["id"]: s for s in self._get("/v1/sites")})
 
-    def sites(self):
-        live = self.relay_status()
-        now = dt.datetime.now(TZ)
+    def api_id(self, ulb):
+        if ulb in self.site_map:
+            return self.site_map[ulb]
+        sites = self._sites()
+        for cand in ("iswm-" + ulb, ulb):
+            if cand in sites:
+                return cand
+        return None
+
+    def _site_trips(self, ulb, d0, d1):
+        sid = self.api_id(ulb)
+        if not sid:
+            return []
+
+        def load():
+            rows = self._get("/v1/sites/%s/entries" % sid, **{"from": d0.isoformat(), "to": d1.isoformat(),
+                                                             "limit": 5000})
+            out = []
+            for r in rows:
+                t = _parse_time(r.get("created_at"))
+                if not t:
+                    continue
+                t = t.astimezone(TZ)
+                out_dir = r.get("dir") == "out"
+                mat = OUT_GROUP.get(str(r.get("material") or "").lower(), "Inerts") if out_dir \
+                    else (r.get("waste_type") or "Mixed")
+                out.append({"site": ulb, "date": t.date().isoformat(), "min": t.hour * 60 + t.minute,
+                            "veh": r.get("vno") or "", "dir": "OUT" if out_dir else "IN", "mat": mat,
+                            "gross": r.get("gross_kg"), "tare": r.get("tare_kg"), "net": r.get("net_kg"),
+                            "dest": (r.get("dest") or "") if out_dir else "", "ticket": r.get("id") or ""})
+            return out
+        # today's trips change; older days don't
+        return self.cache.get(("trips", ulb, d0, d1), 120 if d1 >= today() else 1800, load)
+
+    def trips(self, ids, day_from, day_to):
         out = []
-        for s in self._sites():
-            lv = live.get(s["id"])
-            synced = s["online"]
-            if lv:  # the relay hears from a plant every ~20 s: better than sync time, which waits for new records
-                seen = now - dt.timedelta(seconds=lv.get("seen_s") or 0)
-                s = dict(s, online=bool(lv.get("online")), health=health(bool(lv.get("online")), seen, lv.get("status")))
-                if lv.get("cams") and not s["cameras"]:
-                    s["cameras"] = lv["cams"]
-            else:
-                s = dict(s, health=health(synced, _parse_time(s["last_sync"]), None))
-            out.append(s)
+        for ulb in ids:
+            out.extend(self._site_trips(ulb, day_from, min(day_to, today())))
         return out
 
-    def _sites(self):
-        def load():
-            now = dt.datetime.now(TZ)
-            out = []
-            for s in self._get("/v1/sites"):
-                last = _parse_time(s.get("last_sync"))
-                t = s.get("today") or {}
-                if t.get("date") != today().isoformat():
-                    t = {}  # yesterday's totals: nothing synced yet today
-                out.append({"id": s["id"], "name": s.get("name") or s["id"], "company": s.get("company") or "",
-                            # a plant syncs every few minutes while it has new records; quiet for 2 hours = offline
-                            "online": bool(last and now - last < dt.timedelta(hours=2)),
-                            "last_sync": last.isoformat(timespec="minutes") if last else None,
-                            "cameras": [[c.get("id"), c.get("name")] for c in (s.get("cameras") or []) if c.get("id")],
-                            "today": {"in_trips": t.get("in_trips", 0), "in_kg": t.get("in_kg", 0),
-                                      "out_trips": t.get("out_trips", 0), "out_kg": t.get("out_kg", 0),
-                                      "pending": t.get("pending", 0),
-                                      "in_by_hour": t.get("in_by_hour") or [0] * 24,
-                                      "out_by_hour": t.get("out_by_hour") or [0] * 24}})
-            return sorted(out, key=lambda x: x["name"])
-        return self.cache.get("sites", 60, load)
+    def sync_minutes(self, ids):
+        now = dt.datetime.now(TZ)
+        out = {}
+        for ulb in ids:
+            s = self._sites().get(self.api_id(ulb) or "")
+            t = _parse_time((s or {}).get("last_sync"))
+            out[ulb] = int((now - t).total_seconds() // 60) if t else None
+        return out
 
-    def site(self, sid):
-        return next((s for s in self.sites() if s["id"] == sid), None)
-
-    def trips(self, sid, day_from, day_to):
-        def load():
-            rows = self._get("/v1/sites/%s/entries" % sid, **{"from": day_from.isoformat(), "to": day_to.isoformat(),
-                                                             "limit": 2000})
-            return [{"id": r.get("id"), "dir": r.get("dir"), "vno": r.get("vno"),
-                     "time": (r.get("created_at") or "")[:16],
-                     "what": r.get("waste_type") if r.get("dir") == "in" else r.get("material"),
-                     "where": r.get("source") if r.get("dir") == "in" else r.get("dest"),
-                     "gross_kg": r.get("gross_kg"), "tare_kg": r.get("tare_kg"), "net_kg": r.get("net_kg"),
-                     "operator": r.get("operator")} for r in rows]
-        return self.cache.get(("trips", sid, day_from, day_to), 120, load)
-
-    def daily(self, sid, days=14):
-        start = today() - dt.timedelta(days=days - 1)
-        rows = self.trips(sid, start, today())
-        by = {(start + dt.timedelta(days=i)).isoformat(): {"in_trips": 0, "in_kg": 0, "out_trips": 0, "out_kg": 0,
-                                                            "pending": 0} for i in range(days)}
-        for r in rows:
-            b = by.get(r["time"][:10])
-            if b is None:
-                continue
-            if r["net_kg"] is None:
-                b["pending"] += 1
-            else:
-                b[r["dir"] + "_trips"] += 1
-                b[r["dir"] + "_kg"] += r["net_kg"]
-        return [{"date": d, **v} for d, v in by.items()]
-
-    def live_state(self, sid):
+    def cameras(self, ulb):
+        sid = self.api_id(ulb)
+        if not sid:
+            return []
         try:
-            s = self._get("/v1/sites/%s/live/state" % sid)
+            st = self.cache.get(("live", sid), 10, lambda: self._get("/v1/sites/%s/live/state" % sid))
         except Exception:
-            return None
-        return {"plant_online": s.get("plant_online"), "cams": s.get("cams") or [], "weight": s.get("weight")}
+            st = {}
+        names = st.get("cams") or [[c.get("id"), c.get("name")]
+                                   for c in (self._sites().get(sid) or {}).get("cameras") or []]
+        return [c for c in names if c and c[0]]
 
-    def camera(self, sid, cam, quality):
+    def camera(self, ulb, cam, quality):
         """Pass the relay's MJPEG stream through. While this is open, the relay asks the plant for pictures."""
+        sid = self.api_id(ulb)
+        if not sid:
+            return None
         r = self.http.get(self.url + "/v1/sites/%s/live/%s.mjpg" % (sid, cam), params={"q": quality},
                           stream=True, timeout=(10, 60))
         if r.status_code != 200:
@@ -326,29 +281,6 @@ class ApiData:
             finally:
                 r.close()
         return gen()
-
-
-def health(online, seen, status):
-    """A plant's state for the status board: ok, attention (online but something is wrong) or offline,
-    with the reasons in plain words."""
-    st = status or {}
-    reasons = []
-    if online and status:
-        if not st.get("wb", True):
-            reasons.append("Weighbridge not connected")
-        for name in st.get("cam_problems") or []:
-            reasons.append("Camera problem: %s" % name)
-        if st.get("sync") == "error":
-            reasons.append("Cloud sync error")
-        if (st.get("queued") or 0) > 100:
-            reasons.append("%d records waiting to sync" % st["queued"])
-    state = "offline" if not online else "attention" if reasons else "ok"
-    if not online:
-        reasons = ["No contact since %s" % seen.strftime("%d %b %H:%M") if seen else "Never connected"]
-    return {"state": state, "reasons": reasons, "seen": seen.isoformat(timespec="seconds") if seen else None,
-            "wb": st.get("wb") if status else None, "kg": st.get("kg"), "cams": st.get("cams"),
-            "cam_problems": st.get("cam_problems") or [], "queued": st.get("queued"), "sync": st.get("sync"),
-            "version": st.get("ver"), "operator": st.get("operator")}
 
 
 def _parse_time(v):

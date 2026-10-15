@@ -1,15 +1,23 @@
 # ISWM Dashboard
 
-All ISWM plants on one screen: who is online, today's inward and outward tonnes, trips waiting for an empty weight, every trip with its vehicle number, a 14-day chart, and **live cameras from each plant** with the names given at the plant (Front cam, Tipping floor, Windrow yard…).
+The dashboard for the Integrated Solid Waste Management Project, Govt of Andhra Pradesh, built to the **ISWM Dashboard** design.
 
-It has a login, and it works straight away with **demo data**: made-up plants, trips and moving camera pictures. Point it at your ISWM API and it shows the real plants.
+- **Public landing page** (no sign in):
+  - **Live ULBs**: today's or any day's trips, inward tonnes, plants in operation and trips per hour, for all operational plants or one;
+  - **Upcoming ULBs**: pending ULBs, awarded vs live capacity, pending sites by agency and by cluster.
+- **Sign in**, then four tabs, limited to the ULBs that person may see:
+  - **Overview**: collection trips, waste received, windrowed, recycled, sent out, kept from landfill; trend chart; where the waste went; outward destinations; latest weighments. Today / 7 days / 30 days / This year, one plant or all.
+  - **Sites**: every ULB in their access with status, capacity, trips, received, utilisation, kept from landfill, incomplete records and sync.
+  - **Cameras**: the plant's live cameras, with the names given at the plant, through the ISWM relay.
+  - **Reports**: trips grouped by vehicle, hour, shift, day, month, year, site, material or destination, any date range; download as CSV or Excel.
+
+It runs on **demo data** until it is pointed at the ISWM API (sample trips for the 8 operational ULBs, moving camera pictures).
 
 ```
- Plant PC (ISWM app)  ──sync──▶  Firestore  ◀──reads──  ISWM API (cloud_api, Cloud Run)  ◀──  this dashboard  ◀──  your browser
+ Plant PC (ISWM app)  ──sync──▶  Firestore  ◀──reads──  ISWM API (cloud_api, Cloud Run)  ◀──  this dashboard  ◀──  browser
         └────────── camera pictures, only while someone watches ──────────▶ relay ┘
 ```
-
-The dashboard never talks to Firestore or the plants directly. It uses the ISWM API from the [ISWM repo](https://github.com/tsaaii/ISWM) (`cloud_api`), with one API key that stays on this server. The browser only sees the dashboard.
+The dashboard uses the ISWM API from the [ISWM repo](https://github.com/tsaaii/ISWM) (`cloud_api`) with one API key that stays on this server; the browser never sees it.
 
 ## Try it on your PC (demo data)
 
@@ -20,37 +28,36 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m dashboard.app
 ```
-Open http://127.0.0.1:8080 and log in with **demo** / **demo1234**.
+Open http://127.0.0.1:8080. Sign in with **admin** / **admin@sac** (all sites). The design's other demo logins use the same password: **nellore.site** (Site), **iway.agency** (Agency, package 1), **dyee.varaprasad** (Multi-site, packages 7–10).
 
-## Screens
+## The ULB list
 
-- **Plant status (the first page after login):** one card per plant, problems first. Each card is green *Working*, yellow *Needs attention* or red *Offline*, and says why in plain words, for example *Weighbridge not connected*, *Camera problem: Tipping floor*, *Cloud sync error*, *No contact since 15 Oct 08:15*. Each card shows:
-  - last seen, weighbridge on/off with the live weight, cameras working, records waiting to sync;
-  - today's inward and outward tonnes and trips, pending empty weights;
-  - who is on duty and the app version.
+The 107 ULBs, 10 packages, agencies, DyEEs, awarded TPD and each ULB's status are in `dashboard/registry.py`, from the package progress sheet. When a plant starts, move its name into that package's `op` list; it then appears on the landing page, in Overview and in Sites.
 
-  Filters: *All*, *Needs attention*, *Offline*, *Working*. *Table* view for many plants. Below the cards: **trips per hour today across all plants** and **inward today by plant**. Refreshes every 30 seconds.
-- **One plant:**
-  - status strip (same reasons as the card), live weighbridge reading and today's totals;
-  - **Day** (pick any day, or Today / Yesterday): **trips per hour** with the busiest hour, **shift totals**, inward by **waste type** and **source**, outward by **material** and **destination**, **busiest vehicles**, **waiting for empty weight**, and **Download trips (CSV)** for Excel;
-  - **Cameras**: one button per camera, named as at the plant, plus **All**. Low data, Normal or Sharper; Stop. Nothing is sent from the plant until you press a camera, and a view stops by itself after 10 minutes;
-  - **Last 14 days**: inward and outward tonnes per day. Hover for the numbers, or press *Show as table*;
-  - **Trips**: any day, inward/outward filter, search by vehicle or ticket.
+A ULB is matched to its plant by name: ULB *Nellore* is plant site `iswm-nellore` (the plant app's default site id) or `nellore`. If a plant uses another id, set `SITE_MAP=nellore=my-site-id,badvel=...`.
 
-## Users and login
+## Users and what they see
 
-Users are set in `DASHBOARD_USERS`. Make a line for each person:
+Users are set in `DASHBOARD_USERS`, separated by `;`. Make each line with:
 ```
 python -m dashboard.manage hash
 ```
-It asks for a name and password and prints something like `ravi:pbkdf2$…`. Put several users together with `;`. To let someone see only some plants, add `@site-a|site-b`:
-```
-DASHBOARD_USERS=ravi:pbkdf2$...;kadiri-manager:pbkdf2$...@iswm-kadiri
-```
+It prints `name:pbkdf2$…`. Add what the person may see, and the name for the top bar:
+
+| Line ends with | Access shown | Sees |
+|---|---|---|
+| *(nothing)* | All sites | all 107 ULBs |
+| `@nellore` | Site | one ULB |
+| `@pkg:1` | Agency | one package |
+| `@pkg:7\|8\|9\|10` | Multi-site | those packages |
+| `@badvel\|kamalapuram` | Multi-site | those ULBs |
+
+Add `#Shown name` at the very end, for example `iway:pbkdf2$...@pkg:1#Iway Associates`.
+
 - Passwords are stored only as PBKDF2 hashes.
-- Five wrong tries from one address or for one name blocks login for a minute.
-- A login lasts 12 hours.
-- The demo user exists only while no ISWM API is set and no users are set.
+- Five wrong tries from one address or for one name blocks sign in for a minute.
+- A sign-in lasts 12 hours.
+- The demo logins exist only while no ISWM API and no users are set.
 
 ## Put it on Google Cloud Run
 
@@ -64,7 +71,7 @@ DASHBOARD_USERS=ravi:pbkdf2$...;kadiri-manager:pbkdf2$...@iswm-kadiri
    ```
    gcloud run deploy iswm-dashboard --source . --region asia-south1 --allow-unauthenticated --timeout 3600 --set-env-vars "^@@^ISWM_API_URL=https://iswm-api-XXXX.run.app@@ISWM_API_KEY=NEW-LONG-RANDOM-KEY@@SECRET_KEY=ANOTHER-LONG-RANDOM-TEXT@@DASHBOARD_USERS=ravi:pbkdf2$..."
    ```
-   - `--allow-unauthenticated` only means Cloud Run lets the request reach the dashboard; the dashboard's own login still protects every page.
+   - `--allow-unauthenticated` lets anyone open the public landing page (totals only). Everything after Sign in needs a login.
    - `SECRET_KEY` keeps people logged in when Cloud Run restarts the service. Use 40+ random characters.
    - For a long user list, keep it in Secret Manager and use `--set-secrets DASHBOARD_USERS=dashboard-users:latest` instead.
 3. Open the `https://iswm-dashboard-….run.app` address it prints.
@@ -73,24 +80,25 @@ To deploy a new version later, run the same command **without** `--set-env-vars`
 
 ## Cost and data
 
-- **Status:** each plant tells the relay how it is (weighbridge, cameras, records waiting, version) with the check-in it already makes every ~20 seconds; about 200 bytes. The dashboard asks the relay for all plants in one call every 15 seconds. No Firestore reads. A plant counts as online if it checked in within a minute, or, if remote view is off at that plant, synced within 2 hours.
-- **Overview:** reads one record per plant (today's totals, written by the plant at each sync), at most once a minute however many people are looking. 123 plants ≈ 123 Firestore reads a minute while the page is open, about 180,000 for a full day left open. Firestore's free tier is 50,000 a day; past that it costs about $0.06 per 100,000 reads.
-- **Plant page:** reads the trips of the chosen day and the last 14 days, kept 2 minutes.
-- **Cameras:** the picture goes plant → relay → dashboard → browser. Normal quality is about 0.1–0.2 GB an hour per camera watched; *All* on a plant with 4 cameras is 4 times that. Nothing is sent while nobody watches.
-- Cloud Run runs only while pages are open, so an idle dashboard costs nothing.
+- **Landing page:** public, totals only (no vehicle numbers). Figures are kept 30 seconds, so many visitors don't multiply reads.
+- **Signed-in pages:** read the trips of the chosen plants and dates through the ISWM API. Today's trips are kept 2 minutes and older days 30 minutes. Each trip is one Firestore read the first time. *This year* across all plants is the heaviest view: [Likely] a few thousand trips per plant per month, so open it sparingly once many plants are live. Firestore's free tier is 50,000 reads a day.
+- **Cameras:** plant → relay → dashboard → browser, only while the Cameras tab is open. Normal quality is about 0.1–0.2 GB an hour per camera shown. A view stops by itself after 10 minutes.
+- Cloud Run runs only while pages are open.
 
 ## Needs from the ISWM side
 
-ISWM 1.5.0 or newer on the plant PCs: it sends camera names, today's totals and trips per hour with each sync, and its status with each relay check-in (turn on *Remote camera view* at the plant for the live status). Older plants still show, with zero totals and no camera names until they update.
+ISWM 1.5.0 or newer on the plant PCs, so camera names reach the Cameras tab. Trips come from any version that syncs to Firestore.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `dashboard/app.py` | Pages, login, JSON for the pages, camera pass-through |
-| `dashboard/data.py` | `DemoData` (made-up) and `ApiData` (the real ISWM API) |
+| `dashboard/app.py` | Pages, sign in, data for the pages, camera pass-through |
+| `dashboard/registry.py` | The 107 ULBs, packages, statuses, and access scopes |
+| `dashboard/data.py` | `DemoData` (sample) and `ApiData` (the real ISWM API) |
 | `dashboard/auth.py` | Users, password hashes, wrong-password limit |
 | `dashboard/manage.py` | `python -m dashboard.manage hash` |
-| `dashboard/templates/` | Page layouts |
-| `dashboard/static/` | Styling and the page script (no libraries) |
+| `dashboard/templates/` | Page shells and the sign-in page |
+| `dashboard/static/app.js` | Draws the landing page and the four tabs (no libraries) |
+| `dashboard/static/tokens.css` | The design's colours, type and spacing (Palatino Linotype from the computer; no font files shipped) |
 | `tests/` | `python -m pytest -q tests` |

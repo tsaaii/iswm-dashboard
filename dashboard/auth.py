@@ -3,14 +3,18 @@
 Users are set in the DASHBOARD_USERS environment variable, one per line or
 separated by ";":
 
-    name:password-hash                 sees every site
-    name:password-hash@site-a|site-b   sees only those sites
+    name:password-hash                         All sites (state level)
+    name:password-hash@nellore                 Site: one ULB
+    name:password-hash@pkg:1                   Agency: one package
+    name:password-hash@pkg:7|8|9|10            Multi-site: several packages
+    name:password-hash@badvel|kamalapuram      Multi-site: chosen ULBs
+Add "#Shown name" at the end for the name in the top bar, e.g.  ...@pkg:1#Iway Associates
 
 Make a password hash with:  python -m dashboard.manage hash
 Passwords are never stored, only PBKDF2 hashes (same scheme as the ISWM plant app).
 
-In demo mode (no ISWM API set) with no users set, one demo user exists:
-    demo / demo1234
+In demo mode (no ISWM API set) with no users set, the design's demo logins exist, all with
+password admin@sac: admin (all sites), nellore.site, iway.agency, dyee.varaprasad.
 """
 import hashlib
 import os
@@ -19,7 +23,9 @@ import threading
 import time
 
 ITERATIONS = 200_000
-DEMO_USER = ("demo", "demo1234")
+DEMO_USER = ("admin", "admin@sac")
+DEMO_USERS = [("admin", "", "State ISWM Cell"), ("nellore.site", "nellore", "Plant in-charge, Nellore"),
+              ("iway.agency", "pkg:1", "Iway Associates"), ("dyee.varaprasad", "pkg:7|8|9|10", "DyEE Vara Prasad")]
 
 
 def hash_password(pw, salt=None):
@@ -43,18 +49,21 @@ def password_problem(pw):
 
 
 def load_users(text, demo):
-    """{name: (hash, set_of_sites or empty = all)}"""
+    """{name: {"hash", "scope" (text, see registry.parse_scope), "who" (shown name)}}"""
     users = {}
     for item in (text or "").replace("\n", ";").split(";"):
         item = item.strip()
         if not item:
             continue
         name, _, rest = item.partition(":")
-        hashed, _, sites = rest.partition("@")
+        rest, _, who = rest.partition("#")
+        hashed, _, scope = rest.partition("@")
         if name and hashed.startswith("pbkdf2$"):
-            users[name.strip()] = (hashed.strip(), set(filter(None, sites.split("|"))))
+            users[name.strip()] = {"hash": hashed.strip(), "scope": scope.strip(), "who": who.strip() or name.strip()}
     if not users and demo:
-        users[DEMO_USER[0]] = (hash_password(DEMO_USER[1]), set())
+        h = hash_password(DEMO_USER[1])
+        for name, scope, who in DEMO_USERS:
+            users[name] = {"hash": h, "scope": scope, "who": who}
     return users
 
 

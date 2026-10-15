@@ -1,0 +1,4 @@
+{% extends "base.html" %}
+{% block title %}ISWM · Govt of Andhra Pradesh{% endblock %}
+{% block rootattrs %}data-page="landing" data-demo="{{ 1 if demo else 0 }}"{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='app.js') }}"></script>{% endblock %}

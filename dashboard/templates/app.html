@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}ISWM AP{% endblock %}
+{% block rootattrs %}data-page="app" data-demo="{{ 1 if demo else 0 }}" data-csrf="{{ csrf_token() }}"{% endblock %}
+{% block content %}<form id="logout-form" method="post" action="{{ url_for('logout') }}" hidden><input type="hidden" name="csrf" value="{{ csrf_token() }}"></form>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='app.js') }}"></script>{% endblock %}

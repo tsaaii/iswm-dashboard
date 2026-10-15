@@ -1,24 +1,27 @@
 {% extends "base.html" %}
-{% block title %}Log in · ISWM Dashboard{% endblock %}
-{% block mainclass %}login-wrap{% endblock %}
+{% block title %}Sign in · ISWM AP{% endblock %}
 {% block content %}
-<section class="login">
-  <div class="login-head">
-    <span class="mark big" aria-hidden="true"></span>
-    <div>
-      <div class="kicker">ISWM plants</div>
-      <h1>Dashboard</h1>
+<div style="min-height:100vh;display:flex;flex-direction:column;background:var(--green-050)">
+  <div style="padding:16px clamp(12px,4vw,24px)"><a href="{{ url_for('landing') }}" class="h-textgreen7" style="display:inline-block;padding:6px 0;color:var(--ink-700);font-size:14px;font-weight:700;text-decoration:none">← Back to dashboard</a></div>
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:12px 16px 48px">
+    <div style="width:100%;max-width:400px;display:flex;flex-direction:column;gap:24px">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center">
+        <img src="{{ url_for('static', filename='logo-sac.png') }}" alt="Swachha Andhra Corporation" style="width:112px;height:auto;display:block">
+        <div>
+          <div style="font-size:clamp(24px,6vw,30px);font-weight:400;letter-spacing:-.015em;line-height:1.2;color:var(--ink-900)">Sign in</div>
+          <div style="color:var(--ink-500);font-size:14px;margin-top:4px">Integrated Solid Waste Management Project</div>
+        </div>
+      </div>
+      <form method="post" action="{{ url_for('login_post') }}" style="background:var(--white);border:1px solid var(--ink-100);border-radius:var(--radius-lg);box-shadow:var(--shadow-card);padding:clamp(20px,5vw,28px);display:flex;flex-direction:column;gap:16px;margin:0">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <div style="display:flex;flex-direction:column;gap:6px"><label for="name" style="font-size:13px;font-weight:700;color:var(--ink-700)">Username</label><input id="name" name="name" value="{{ name or '' }}" required autofocus style="width:100%;min-width:0;height:44px;padding:0 14px;border:1px solid var(--ink-200);border-radius:var(--radius-md);background:var(--white);font:inherit;font-size:15px;color:var(--ink-900);outline:none" placeholder="admin" autocomplete="username"></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><label for="password" style="font-size:13px;font-weight:700;color:var(--ink-700)">Password</label><input id="password" name="password" type="password" required style="width:100%;min-width:0;height:44px;padding:0 14px;border:1px solid var(--ink-200);border-radius:var(--radius-md);background:var(--white);font:inherit;font-size:15px;color:var(--ink-900);outline:none" placeholder="••••••••" autocomplete="current-password"></div>
+        {% if error %}<div role="alert" style="font-size:13px;color:var(--red-600);background:var(--red-100);border-radius:var(--radius-md);padding:10px 12px">{{ error }}</div>{% endif %}
+        {% if no_users %}<div style="font-size:13px;color:var(--red-600);background:var(--red-100);border-radius:var(--radius-md);padding:10px 12px">No users are set up. Add DASHBOARD_USERS (see README).</div>{% endif %}
+        <button class="h-green7" style="height:46px;border:0;border-radius:var(--radius-pill);background:var(--green-600);color:var(--white);font-size:15px;font-weight:700;cursor:pointer">Sign in</button>
+      </form>
+      {% if demo %}<div style="text-align:center;font-size:13px;color:var(--ink-500)">Demo login · username <b style="color:var(--ink-700)">{{ demo_user[0] }}</b> · password <b style="color:var(--ink-700)">{{ demo_user[1] }}</b></div>{% endif %}
     </div>
   </div>
-  <form method="post" action="{{ url_for('login_post') }}" class="stack">
-    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-    <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
-    <label class="field">User name<input name="name" autocomplete="username" required autofocus value="{{ name or '' }}"></label>
-    <label class="field">Password<input name="password" type="password" autocomplete="current-password" required></label>
-    {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
-    {% if no_users %}<div class="error">No users are set up. Add DASHBOARD_USERS (see README).</div>{% endif %}
-    <button class="btn primary big">Log in</button>
-  </form>
-  {% if demo %}<p class="hint">Demo: user <b>{{ demo_user[0] }}</b>, password <b>{{ demo_user[1] }}</b>. Numbers and pictures are made up.</p>{% endif %}
-</section>
+</div>
 {% endblock %}

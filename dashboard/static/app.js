@@ -1,296 +1,394 @@
-/* ISWM dashboard: fills the pages from /api and shows the cameras on demand. No libraries. */
+/* ISWM dashboard: the "ISWM Dashboard" design, drawn from live data. No libraries.
+ * Landing (public): Live ULBs and Upcoming ULBs.  App (signed in): Overview, Sites, Cameras, Reports. */
 (function () {
   'use strict';
-  const $ = id => document.getElementById(id);
+  const root = document.getElementById('root');
+  const PAGE = root.dataset.page, DEMO = root.dataset.demo === '1';
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const num = n => Math.round(n || 0).toLocaleString('en-IN');
-  const tonnes = kg => (kg || 0) >= 100000 ? Math.round(kg / 1000).toLocaleString('en-IN') + ' t' : ((kg || 0) / 1000).toLocaleString('en-IN', {maximumFractionDigits: 1}) + ' t';
-  const kg = n => n == null ? null : num(n) + ' kg';
-  const trips = n => (n || 0) + (n === 1 ? ' trip' : ' trips');
-  const ago = iso => {
-    if (!iso) return 'never';
-    const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
-    return s < 60 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' days ago';
-  };
-  const isoDay = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  const isoToday = () => isoDay(new Date());
-  const hourLabel = h => (h % 12 || 12) + (h < 12 ? ' am' : ' pm');
-  const STATE = {ok: ['Working', 'ok'], attention: ['Needs attention', 'attention'], offline: ['Offline', 'offline']};
-  async function get(url) {
-    const r = await fetch(url, {headers: {'Accept': 'application/json'}, credentials: 'same-origin'});
-    if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname); throw new Error('login'); }
+  const p2 = n => String(n).padStart(2, '0');
+  const ymd = d => d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
+  const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  const addD = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  const fT = v => (v || 0).toLocaleString('en-IN', {minimumFractionDigits: 1, maximumFractionDigits: 1});
+  const fN = v => (v || 0).toLocaleString('en-IN');
+  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+  const hm = m => p2(Math.floor(m / 60)) + ':' + p2(m % 60);
+  const sum = (arr, f) => { let s = 0; for (const t of arr) { const v = f(t); if (v) s += v; } return s; };
+  const shiftOf = m => m >= 360 && m < 840 ? 'A (06–14)' : m >= 840 && m < 1320 ? 'B (14–22)' : 'C (22–06)';
+  const W = () => window.innerWidth;
+  // plants and records are on India time, whatever clock this computer has
+  const nowI = () => new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60000);
+  const ST = {op: {l: 'Operational', fg: 'var(--green-700)', bg: 'var(--green-100)', dot: 'var(--green-600)'}, near: {l: 'Nearing completion', fg: 'var(--sky-600)', bg: 'var(--sky-100)', dot: 'var(--sky-400)'}, wip: {l: 'Under construction', fg: 'var(--ink-700)', bg: 'var(--ink-050)', dot: 'var(--ink-500)'}, lanc: {l: 'Land available, not started', fg: 'var(--amber-600)', bg: 'var(--amber-100)', dot: '#f59e0b'}, legacy: {l: 'Legacy / fresh waste', fg: 'var(--amber-600)', bg: 'var(--amber-100)', dot: '#fb923c'}, protest: {l: 'Public protest', fg: 'var(--red-600)', bg: 'var(--red-100)', dot: 'var(--red-600)'}, lna: {l: 'Land not available', fg: 'var(--ink-700)', bg: 'var(--ink-100)', dot: 'var(--ink-700)'}};
+  const ORDER = ['op', 'near', 'wip', 'lanc', 'legacy', 'protest', 'lna'];
+  const PERIODS = [['today', 'Today'], ['7d', '7 days'], ['30d', '30 days'], ['year', 'This year']];
+  const GROUPS = [['trip', 'Trip list'], ['vehicle', 'Vehicle'], ['hour', 'Hour'], ['shift', 'Shift'], ['day', 'Day'], ['month', 'Month'], ['year', 'Year'], ['site', 'Site'], ['material', 'Material'], ['dest', 'Destination']];
+  async function getJSON(url) {
+    const r = await fetch(url, {headers: {Accept: 'application/json'}, credentials: 'same-origin'});
+    if (r.status === 401) { location.href = '/login'; throw new Error('login'); }
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   }
+  const S = {};          // what the person picked
+  let actions = {};      // data-act name -> function, rebuilt on every draw
+  let n = 0;
+  const act = fn => { const k = 'a' + (n++); actions[k] = fn; return k; };
+  function set(p) { Object.assign(S, p); draw(); }
+  function draw() {
+    const keepFocus = document.activeElement && document.activeElement.id;
+    actions = {}; n = 0;
+    const html = PAGE === 'landing' ? landing() : app();
+    const form = document.getElementById('logout-form');
+    root.innerHTML = html;
+    if (form) root.appendChild(form);
+    if (keepFocus && document.getElementById(keepFocus)) document.getElementById(keepFocus).focus();
+  }
+  root.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && !b.disabled && actions[b.dataset.act]) actions[b.dataset.act](e); });
+  root.addEventListener('change', e => { const b = e.target.closest('[data-chg]'); if (b && actions[b.dataset.chg]) actions[b.dataset.chg](e); });
+  window.addEventListener('resize', () => { clearTimeout(window._rs); window._rs = setTimeout(draw, 120); });
 
-  // --- charts ------------------------------------------------------------------------------------
-  // Bars side by side for inward and outward on one shared axis; hover a column for its numbers.
-  function bars(box, labels, series, opt) {
-    box._chart = {labels, series, opt};
-    const W = box.clientWidth || 800, H = box.clientHeight || 240;
-    const pad = {l: opt.padL || 44, r: 8, t: 10, b: 28};
-    const max = Math.max(1, ...series.flatMap(s => s.values));
-    const step = niceStep(max / 4), top = Math.ceil(max / step) * step;
-    const y = v => pad.t + (H - pad.t - pad.b) * (1 - v / top);
-    const slot = (W - pad.l - pad.r) / labels.length;
-    const bw = Math.max(2, Math.min(22, (slot - 6) / series.length - 2));
-    let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true">';
-    for (let v = 0; v <= top + 1e-9; v += step) {
-      s += '<line class="' + (v === 0 ? 'base' : 'gridline') + '" x1="' + pad.l + '" x2="' + (W - pad.r) + '" y1="' + y(v) + '" y2="' + y(v) + '"/>';
-      s += '<text class="axis" x="' + (pad.l - 8) + '" y="' + (y(v) + 4) + '" text-anchor="end">' + opt.yFmt(v) + '</text>';
+  // shared pieces ------------------------------------------------------------------------------------
+  const chevron = (right, color) => '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="' + (color || 'currentColor') + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute;right:' + right + 'px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--ink-500)"><path d="m6 9 6 6 6-6"></path></svg>';
+  const options = (list, value) => list.map(o => '<option value="' + esc(o.v) + '"' + (o.v === value ? ' selected' : '') + '>' + esc(o.l) + '</option>').join('');
+  const liveDot = on => '<span style="width:7px;height:7px;border-radius:50%;background:' + (on ? 'var(--green-600)' : 'var(--ink-500)') + ';box-shadow:0 0 0 3px ' + (on ? 'rgba(15,161,78,.22)' : 'rgba(161,161,170,.2)') + '"></span>';
+  const lastText = m => m == null ? 'No weighment yet today' : 'Live · last weighment ' + ((() => { const now = nowI(), d = now.getHours() * 60 + now.getMinutes() - m; return d <= 1 ? 'just now' : d < 60 ? d + ' min ago' : Math.floor(d / 60) + ' h ago'; })());
+  const card = (inner, extra) => '<div style="background:var(--white);border:1px solid var(--ink-100);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);' + (extra || '') + '">' + inner + '</div>';
+  const th = (l, al) => '<th style="padding:10px 16px;text-align:' + (al || 'left') + ';font-size:12px;font-weight:700;color:var(--ink-500);border-bottom:1px solid var(--ink-100);white-space:nowrap;background:var(--green-050)">' + esc(l) + '</th>';
+  const td = (v, style) => '<td style="padding:11px 16px;border-bottom:1px solid var(--ink-050);' + (style || '') + '">' + v + '</td>';
+  const titleBlock = (t, sub) => '<div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:15px;font-weight:700;letter-spacing:-.01em">' + esc(t) + '</div><div style="font-size:13px;color:var(--ink-500)">' + esc(sub) + '</div></div>';
+  function barsHtml(bars, height, gap, grid) {
+    return '<div style="display:flex;align-items:flex-end;gap:' + gap + 'px;height:' + height + 'px;border-bottom:1px solid var(--ink-100);background:repeating-linear-gradient(to top,var(--ink-050) 0,var(--ink-050) 1px,transparent 1px,transparent ' + grid + 'px)">' +
+      bars.map(b => '<div title="' + esc(b.tip) + '" style="flex:1;min-width:0;height:' + b.h + '%;background:' + b.bg + ';border-radius:4px 4px 0 0"></div>').join('') + '</div>' +
+      '<div style="display:flex;gap:' + gap + 'px;margin-top:-' + (gap > 4 ? 12 : 10) + 'px">' + bars.map(b => '<div style="flex:1;min-width:0;font-size:11px;color:var(--ink-500);white-space:nowrap;font-variant-numeric:tabular-nums">' + esc(b.lab) + '</div>').join('') + '</div>';
+  }
+
+  // ===== public landing ===============================================================================
+  let LIVE = null, UP = null;
+  function loadLive() {
+    const q = '/api/public/live?day=' + (S.lDay || '') + '&ulb=' + encodeURIComponent(S.lUlb || 'ALL');
+    getJSON(q).then(d => { LIVE = d; if (!S.lDay) S.lDay = d.today; draw(); }).catch(() => {});
+  }
+  function landing() {
+    const tab = S.lTab || 'live';
+    let h = '<div style="background:var(--white);border-bottom:1px solid var(--ink-100)"><div style="max-width:1180px;margin:0 auto;padding:14px clamp(12px,4vw,24px);display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:clamp(10px,3vw,20px)">' +
+      '<img src="/static/logo-ap.png" alt="Government of Andhra Pradesh" style="width:clamp(48px,9vw,84px);height:auto;display:block">' +
+      '<div style="text-align:center;min-width:0"><div style="font-size:clamp(17px,3.4vw,34px);font-weight:400;letter-spacing:-.015em;line-height:1.15;color:var(--ink-900);text-wrap:balance">Integrated Solid Waste Management Project</div><div style="font-size:clamp(10px,1.4vw,14px);letter-spacing:.14em;text-transform:uppercase;color:var(--green-700);font-weight:700;margin-top:6px">Govt of Andhra Pradesh</div></div>' +
+      '<img src="/static/logo-sac.png" alt="Swachha Andhra Corporation" style="width:clamp(48px,9vw,84px);height:auto;display:block"></div></div>';
+    h += '<div style="border-bottom:1px solid var(--ink-100);background:rgba(255,255,255,.92);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5"><div style="max-width:1180px;margin:0 auto;padding:10px clamp(12px,4vw,24px);display:flex;align-items:center;gap:12px">' +
+      '<div style="display:flex;gap:2px;padding:3px;background:var(--white);border:1px solid var(--ink-100);border-radius:10px">' +
+      [['live', 'Live ULBs'], ['up', 'Upcoming ULBs']].map(([k, l]) => '<button data-act="' + act(() => { set({lTab: k}); if (k === 'up' && !UP) getJSON('/api/public/upcoming').then(d => { UP = d; draw(); }); }) + '" style="border:0;border-radius:var(--radius-pill);padding:6px 14px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;background:' + (tab === k ? 'var(--green-600)' : 'transparent') + ';color:' + (tab === k ? 'var(--white)' : 'var(--ink-500)') + '">' + l + '</button>').join('') + '</div>' +
+      '<div style="margin-left:auto;display:flex;align-items:center;gap:16px">' +
+      (W() >= 720 ? '<span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-500);white-space:nowrap">' + liveDot(LIVE && LIVE.last_min != null) + esc(LIVE ? lastText(LIVE.last_min) : 'Live') + '</span>' : '') +
+      '<a href="/login" class="h-green7" style="display:inline-flex;align-items:center;height:36px;padding:0 16px;border:0;border-radius:var(--radius-pill);background:var(--green-600);color:var(--white);font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;text-decoration:none">Sign in</a></div></div></div>';
+    h += '<div style="max-width:1180px;margin:0 auto;padding:clamp(20px,5vw,36px) clamp(12px,4vw,24px) 48px;display:flex;flex-direction:column;gap:20px">';
+    h += tab === 'live' ? landingLive() : landingUp();
+    h += '<div style="font-size:12px;color:var(--ink-500);margin-top:8px">Sites and capacity from the package progress sheet' + (DEMO ? ' · daily trip figures are sample data' : '') + '</div></div>';
+    return h;
+  }
+  function landingLive() {
+    if (!LIVE) return '<div style="color:var(--ink-500)">Loading…</div>';
+    const ds = S.lDay || LIVE.today, isT = ds === LIVE.today, d = parse(ds), sel = S.lUlb || 'ALL';
+    const u = LIVE.ops.find(o => o.id === sel), tons = LIVE.kg / 1000, pre = ds < LIVE.op_start;
+    const c = LIVE.hours, mx = Math.max(1, ...c), nh = isT ? nowI().getHours() : 24, pk = c.indexOf(Math.max(...c));
+    const opts = [{v: 'ALL', l: 'All live ULBs (' + LIVE.ops.length + ')'}].concat(LIVE.ops.map(o => ({v: o.id, l: o.name + ' · Pkg ' + o.pk})).sort((a, b) => a.l.localeCompare(b.l)));
+    const go = p => { set(p); loadLive(); };
+    const kpis = [{label: 'Trips', value: fN(LIVE.trips), unit: '', sub: isT ? 'So far today' : 'Inward trips that day'},
+      {label: 'Inward waste', value: fT(tons), unit: 'tonnes', sub: 'Net weight, complete records'},
+      sel === 'ALL' ? {label: 'Plants in operation', value: pre ? '0' : String(LIVE.ops.length), unit: 'of ' + LIVE.total_ulbs, sub: (pre ? 'First plants opened ' : 'Operational since ') + parse(LIVE.op_start).toLocaleDateString('en-IN', {day: 'numeric', month: 'long', year: 'numeric'})}
+        : {label: 'Capacity used', value: pre ? '—' : String(Math.round(tons / u.cap * 100)), unit: pre ? '' : '%', sub: 'Of about ' + u.cap + ' TPD estimated capacity'}];
+    const bars = c.map((v, hr) => ({h: hr > nh ? 0 : (v ? Math.max(3, v / mx * 100) : 0), bg: isT && hr === nh ? 'var(--green-700)' : 'var(--green-500)', lab: hr % 2 === 0 ? p2(hr) : '', tip: p2(hr) + ':00–' + p2(hr) + ':59 · ' + v + ' trips'}));
+    return '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:20px 32px;margin-bottom:8px">' +
+      '<div style="flex:1 1 420px;min-width:0"><h1 style="margin:0;font-size:clamp(30px,4vw,42px);font-weight:400;letter-spacing:-.015em;line-height:1.1">Live ULBs</h1><div style="color:var(--ink-500);font-size:15px;margin-top:6px">' + esc(sel === 'ALL' ? 'Weighbridge activity across all operational plants' : 'ISWM ' + u.name + ' · Package ' + u.pk + ' · ' + u.ag) + '</div></div>' +
+      '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;flex:1 1 auto;justify-content:flex-end">' +
+      '<div style="position:relative;flex:1 1 220px;min-width:0;max-width:320px"><select id="l-ulb" aria-label="ULB" data-chg="' + act(e => go({lUlb: e.target.value})) + '" style="appearance:none;-webkit-appearance:none;width:100%;height:46px;padding:0 36px 0 16px;border:1px solid var(--ink-100);border-radius:var(--radius-pill);background:var(--white);font:inherit;font-size:14px;font-weight:700;color:var(--ink-900);cursor:pointer;box-shadow:var(--shadow-card)">' + options(opts, sel) + '</select>' + chevron(14) + '</div>' +
+      '<div style="background:var(--white);border:1px solid var(--ink-100);border-radius:var(--radius-lg);box-shadow:var(--shadow-card);padding:5px;display:flex;align-items:center;gap:2px">' +
+      '<button aria-label="Day before" class="h-ink050" data-act="' + act(() => go({lDay: ymd(addD(d, -1))})) + '" style="width:34px;height:34px;border:0;border-radius:var(--radius-pill);background:transparent;cursor:pointer;font-size:17px;color:var(--ink-700)">‹</button>' +
+      '<div style="display:flex;flex-direction:column;align-items:center;padding:0 10px;min-width:150px;line-height:1.25"><span style="font-size:11px;color:var(--ink-500);font-weight:700">' + esc(isT ? 'Today · live' : d.toLocaleDateString('en-IN', {weekday: 'long'})) + '</span><span style="font-size:14px;font-weight:700;white-space:nowrap">' + esc(d.toLocaleDateString('en-IN', {day: 'numeric', month: 'short', year: 'numeric'})) + '</span></div>' +
+      '<button aria-label="Day after" class="h-ink050" ' + (isT ? 'disabled ' : '') + 'data-act="' + act(() => go({lDay: ymd(addD(d, 1))})) + '" style="width:34px;height:34px;border:0;border-radius:var(--radius-pill);background:transparent;cursor:pointer;font-size:17px;color:var(--ink-700)">›</button>' +
+      '<button ' + (isT ? 'disabled ' : '') + 'data-act="' + act(() => go({lDay: LIVE.today})) + '" style="height:34px;padding:0 12px;border:0;border-left:1px solid var(--ink-100);background:transparent;cursor:pointer;font-size:13px;font-weight:700;color:var(--green-700)">Today</button></div></div></div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px">' + kpis.map(k =>
+        '<div style="background:var(--white);border:1px solid var(--ink-100);border-radius:var(--radius-lg);box-shadow:var(--shadow-card);padding:22px 24px;display:flex;flex-direction:column;gap:8px"><div style="font-size:13px;color:var(--ink-500);font-weight:700">' + esc(k.label) + '</div><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:clamp(34px,8vw,44px);font-weight:400;letter-spacing:-.015em;line-height:1;font-variant-numeric:tabular-nums">' + esc(k.value) + '</span><span style="font-size:16px;color:var(--ink-500);font-weight:700">' + esc(k.unit) + '</span></div><div style="font-size:13px;color:var(--ink-500)">' + esc(k.sub) + '</div></div>').join('') + '</div>' +
+      '<div style="background:var(--white);border:1px solid var(--ink-100);border-radius:var(--radius-lg);box-shadow:var(--shadow-card);padding:22px 24px;display:flex;flex-direction:column;gap:20px">' +
+      '<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 16px">' + titleBlock('Trips per hour', sel === 'ALL' ? 'Inward trips, all operational plants' : 'Inward trips, ISWM ' + u.name) + '<div style="font-size:13px;color:var(--ink-500)">' + esc(LIVE.trips ? 'Busiest hour · ' + p2(pk) + ':00 with ' + c[pk] + ' trips' : 'No trips recorded') + '</div></div>' +
+      barsHtml(bars, W() >= 640 ? 260 : 180, 5, 65) + '</div>';
+  }
+  function landingUp() {
+    if (!UP) return '<div style="color:var(--ink-500)">Loading…</div>';
+    const U = UP.ulbs, ops = U.filter(u => u.status === 'op'), pend = U.filter(u => u.status !== 'op'), liveCap = sum(ops, u => u.cap), awd = UP.awarded_tpd, wide = W() >= 640;
+    const stats = [{label: 'Pending ULBs', value: fN(pend.length), unit: 'of ' + U.length, sub: 'Not yet in operation', c: 'var(--ink-900)'}, {label: 'Awarded capacity', value: fN(Math.round(awd)), unit: 'TPD', sub: 'Across ' + UP.packages.length + ' packages', c: 'var(--ink-900)'}, {label: 'Live capacity', value: fN(liveCap), unit: 'TPD', sub: 'From ' + ops.length + ' operational plants', c: 'var(--green-700)'}];
+    const ags = {};
+    UP.packages.forEach(p => { const a = ags[p.ag] || (ags[p.ag] = {l: p.ag, pk: [], n: 0, of: 0}); a.pk.push(p.n); a.of += p.ulb; a.n += U.filter(u => u.pk === p.n && u.status !== 'op').length; });
+    const ag = Object.values(ags).sort((a, b) => b.n - a.n), mA = Math.max(...ag.map(a => a.n));
+    const cl = UP.packages.map(p => ({l: 'Cluster ' + p.n + (p.n === 10 ? ' · Kurnool & Nandyal' : ''), sub: p.ag + ' · DyEE ' + p.dy, n: U.filter(u => u.pk === p.n && u.status !== 'op').length, of: p.ulb})), mC = Math.max(...cl.map(c => c.n));
+    const cols = wide ? 'minmax(0,190px) minmax(0,1fr) 64px' : 'minmax(0,1fr) auto';
+    const rowsHtml = rows => rows.map(r => '<div style="display:grid;grid-template-columns:' + cols + ';align-items:center;gap:6px 14px"><div style="min-width:0"><div style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(r.l) + '</div><div style="font-size:12px;color:var(--ink-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(r.sub) + '</div></div>' +
+      '<div style="order:' + (wide ? 0 : 1) + ';grid-column:' + (wide ? 'auto' : '1 / -1') + ';height:8px;background:var(--ink-050);border-radius:999px;overflow:hidden"><div style="height:100%;width:' + r.w + '%;background:var(--green-600);border-radius:999px"></div></div>' +
+      '<div style="text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap"><span style="font-weight:700">' + r.n + '</span><span style="color:var(--ink-500);font-size:12px"> / ' + r.of + '</span></div></div>').join('');
+    const box = (t, sub, rows) => '<div style="background:var(--white);border:1px solid var(--ink-100);border-radius:var(--radius-lg);box-shadow:var(--shadow-card);padding:22px 24px;display:flex;flex-direction:column;gap:16px;min-width:0">' + titleBlock(t, sub) + '<div style="display:flex;flex-direction:column;gap:12px">' + rowsHtml(rows) + '</div></div>';
+    return '<div style="margin-bottom:8px"><h1 style="margin:0;font-size:clamp(30px,4vw,42px);font-weight:400;letter-spacing:-.015em;line-height:1.1">Upcoming ULBs</h1><div style="color:var(--ink-500);font-size:15px;margin-top:6px">Sites not yet in operation, and how much awarded capacity is live</div></div>' +
+      '<div style="background:var(--white);border:1px solid var(--ink-100);border-radius:var(--radius-lg);box-shadow:var(--shadow-card);padding:24px;display:flex;flex-direction:column;gap:20px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:20px">' +
+      stats.map(k => '<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:13px;color:var(--ink-500);font-weight:700">' + esc(k.label) + '</div><div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:40px;font-weight:400;letter-spacing:-.015em;line-height:1;font-variant-numeric:tabular-nums;color:' + k.c + '">' + esc(k.value) + '</span><span style="font-size:15px;color:var(--ink-500);font-weight:700">' + esc(k.unit) + '</span></div><div style="font-size:13px;color:var(--ink-500)">' + esc(k.sub) + '</div></div>').join('') + '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:8px"><div style="height:12px;background:var(--ink-050);border-radius:999px;overflow:hidden"><div style="height:100%;width:' + (liveCap / awd * 100) + '%;background:var(--green-600);border-radius:999px"></div></div><div style="display:flex;justify-content:space-between;gap:12px;font-size:12px;color:var(--ink-500)"><span>Live capacity · ' + (liveCap / awd * 100).toFixed(1) + '% of awarded</span><span>Awarded · ' + fN(awd) + ' TPD</span></div></div></div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,500px),1fr));gap:12px">' +
+      box('Pending sites by agency', 'ULBs not yet in operation', ag.map(a => ({l: a.l, sub: 'Package' + (a.pk.length > 1 ? 's ' : ' ') + a.pk.join(' & '), n: a.n, of: a.of, w: a.n / mA * 100}))) +
+      box('Pending sites by cluster', 'One cluster per package', cl.map(c => ({...c, w: c.n / mC * 100}))) + '</div>';
+  }
+
+  // ===== signed in ======================================================================================
+  let ME = null, SYNC = {};
+  const TRIPS = {}, LOADING = {};
+  function trips(ids, from, to) {
+    const k = ids.join(',') + '|' + from + '|' + to;
+    if (TRIPS[k]) return TRIPS[k].rows;
+    if (!LOADING[k]) {
+      LOADING[k] = true;
+      getJSON('/api/trips?ids=' + encodeURIComponent(ids.join(',')) + '&from=' + from + '&to=' + to)
+        .then(d => { TRIPS[k] = {rows: d.trips, at: Date.now()}; }).catch(() => {}).finally(() => { delete LOADING[k]; draw(); });
     }
-    const every = Math.max(1, Math.ceil(46 / slot));
-    labels.forEach((lab, i) => {
-      const cx = pad.l + slot * i + slot / 2, x0 = cx - (bw * series.length + 2 * (series.length - 1)) / 2;
-      series.forEach((ser, k) => {
-        const v = ser.values[i], yy = y(v), h = y(0) - yy;
-        if (h > 0.5) s += '<path fill="var(--' + ser.key + ')" d="' + bar(x0 + k * (bw + 2), yy, bw, h, Math.min(4, h, bw / 2)) + '"/>';
-      });
-      if (i % every === 0) s += '<text class="axis" x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle">' + esc(lab) + '</text>';
-      s += '<rect class="hit" data-i="' + i + '" x="' + (pad.l + slot * i) + '" y="' + pad.t + '" width="' + slot + '" height="' + (H - pad.t - pad.b) + '"/>';
+    return null;
+  }
+  function refreshToday() {  // today's figures change: fetch again every 30 s
+    Object.keys(TRIPS).forEach(k => { if (k.endsWith('|' + ME.today) && Date.now() - TRIPS[k].at > 25000) delete TRIPS[k]; });
+    getJSON('/api/sync?ids=' + ME.ops.join(',')).then(d => { SYNC = d; }).catch(() => {}).finally(draw);
+  }
+  const byId = id => ME.ulbs.find(u => u.id === id);
+  function range(p) {
+    const t = parse(ME.today);
+    if (p === '7d') return [ymd(addD(t, -6)), ME.today];
+    if (p === '30d') return [ymd(addD(t, -29)), ME.today];
+    if (p === 'year') return [t.getFullYear() + '-01-01', ME.today];
+    return [ME.today, ME.today];
+  }
+  function metrics(tr, days, ids) {
+    const ins = tr.filter(t => t.dir === 'IN'), outs = tr.filter(t => t.dir === 'OUT'), cIn = ins.filter(t => t.net != null);
+    const recv = sum(cIn, t => t.net) / 1000, wind = sum(cIn, t => t.mat === 'Wet' ? t.net : t.mat === 'Mixed' ? t.net * .7 : 0) / 1000;
+    const by = m => sum(outs, t => t.mat === m ? t.net : 0) / 1000, rdf = by('RDF'), comp = by('Compost'), rec = by('Recyclables'), inert = by('Inerts');
+    return {trips: ins.length, outTrips: outs.length, recv, wind, rdf, comp, rec, inert, disp: rdf + comp + rec + inert, div: recv ? Math.max(0, Math.min(1, 1 - inert / recv)) : 0, avg: cIn.length ? recv / cIn.length : 0, veh: new Set(ins.map(t => t.veh)).size, inc: tr.filter(t => t.net == null).length, cap: sum(ids, id => byId(id).cap) * days};
+  }
+  const syncMin = id => SYNC[id] == null ? null : SYNC[id];
+  const syncOk = id => syncMin(id) != null && syncMin(id) < 30;
+  const syncText = id => { const m = syncMin(id); return m == null ? 'Not synced yet' : m < 30 ? m + ' min ago' : 'Delayed · ' + Math.round(m / 60) + ' h'; };
+  function app() {
+    if (!ME) return '<div style="padding:40px;color:var(--ink-500)">Loading…</div>';
+    const ops = ME.ops, single = ops.length === 1, sc = ME.ulbs, tab = S.tab || 'overview';
+    const site = single ? ops[0] : (S.site || 'ALL'), ids = site === 'ALL' ? ops : [site];
+    const period = S.period || 'today', [from, to] = range(period), days = Math.round((parse(to) - parse(from)) / 864e5) + 1;
+    const todayAll = ops.length ? trips(ops, ME.today, ME.today) : [];
+    const lastMin = todayAll && todayAll.length ? Math.max(...todayAll.map(t => t.min)) : null;
+    const initials = ME.who.split(/[ ,]+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    const tabs = [['overview', 'Overview'], ...(sc.length > 1 ? [['sites', 'Sites']] : []), ['cameras', 'Cameras'], ['reports', 'Reports']];
+    let h = '<div style="background:var(--white);border-bottom:1px solid var(--ink-100);position:sticky;top:0;z-index:5"><div style="max-width:1320px;margin:0 auto;padding:0 clamp(12px,4vw,24px)">' +
+      '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;min-height:56px;padding:8px 0">' +
+      '<div style="width:28px;height:28px;border-radius:var(--radius-md);background:var(--green-600);display:flex;align-items:center;justify-content:center;flex:none"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 19H4.815a1.83 1.83 0 0 1-1.57-.881 1.785 1.785 0 0 1-.004-1.784L7.196 9.5"></path><path d="M11 19h8.203a1.83 1.83 0 0 0 1.556-.89 1.784 1.784 0 0 0 0-1.775l-1.226-2.12"></path><path d="m14 16-3 3 3 3"></path><path d="M8.293 13.596 7.196 9.5 3.1 10.598"></path><path d="m9.344 5.811 1.093-1.892A1.83 1.83 0 0 1 11.985 3a1.784 1.784 0 0 1 1.546.888l3.943 6.843"></path><path d="m13.378 9.633 4.096 1.098 1.097-4.096"></path></svg></div>' +
+      '<span style="font-weight:700;font-size:15px;letter-spacing:-.01em;white-space:nowrap">ISWM AP</span><span style="color:var(--ink-200);font-size:18px">/</span>' +
+      '<span style="font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(ME.scope) + '</span>' +
+      '<span style="font-size:11px;font-weight:700;color:var(--ink-700);background:var(--ink-050);border-radius:999px;padding:2px 8px;white-space:nowrap">' + esc(ME.access) + '</span>' +
+      '<div style="margin-left:auto;display:flex;align-items:center;gap:14px"><span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-700);white-space:nowrap">' + liveDot(lastMin != null) + esc(lastText(lastMin)) + '</span>' +
+      '<div style="display:flex;align-items:center;gap:10px"><div style="width:30px;height:30px;border-radius:50%;background:var(--green-600);color:var(--white);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:none">' + esc(initials) + '</div>' + (W() >= 720 ? '<span style="font-size:13px;font-weight:700;white-space:nowrap">' + esc(ME.who) + '</span>' : '') + '</div>' +
+      '<button class="h-green050" data-act="' + act(() => document.getElementById('logout-form').submit()) + '" style="height:32px;padding:0 12px;border:1px solid var(--ink-100);border-radius:var(--radius-pill);background:var(--white);font-size:13px;color:var(--ink-700);cursor:pointer;white-space:nowrap">Sign out</button></div></div>' +
+      '<div style="display:flex;gap:4px;margin-bottom:-1px;overflow-x:auto">' + tabs.map(([k, l]) => '<button data-act="' + act(() => set({tab: k})) + '" style="background:none;border:0;border-bottom:2px solid ' + (tab === k ? 'var(--green-600)' : 'transparent') + ';color:' + (tab === k ? 'var(--ink-900)' : 'var(--ink-500)') + ';font-size:14px;font-weight:700;padding:10px 12px;cursor:pointer">' + l + '</button>').join('') + '</div></div></div>';
+    h += '<div style="max-width:1320px;margin:0 auto;padding:clamp(18px,5vw,28px) clamp(12px,4vw,24px) 40px;display:flex;flex-direction:column;gap:20px">';
+    const title = {overview: 'Overview', sites: 'Sites', cameras: 'Plant cameras', reports: 'Reports'}[tab];
+    const sub = {overview: 'Collection, processing and dispatch' + (ids.length === 1 ? ' at ISWM ' + byId(ids[0]).name : ' across ' + ids.length + ' operational plants'), sites: sc.length + ' ULBs in your access · ' + ops.length + ' operational', cameras: 'Live views from the plant', reports: 'Build a trip report and download it'}[tab];
+    h += '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px 24px"><div style="flex:1 1 280px;min-width:0"><h1 style="margin:0;font-size:28px;font-weight:700;letter-spacing:-.015em;line-height:1.2">' + esc(title) + '</h1><div style="color:var(--ink-500);font-size:14px;margin-top:4px">' + esc(sub) + '</div></div>';
+    const siteOpts = (single ? [] : [{v: 'ALL', l: 'All operational plants (' + ops.length + ')'}]).concat(ops.map(id => ({v: id, l: 'ISWM ' + byId(id).name})));
+    const sel = (id, list, value, chg, dis) => '<div style="position:relative;width:240px;max-width:100%"><select id="' + id + '" data-chg="' + chg + '"' + (dis ? ' disabled' : '') + ' style="appearance:none;-webkit-appearance:none;width:100%;min-width:0;height:36px;padding:0 32px 0 12px;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--white);font:inherit;font-size:14px;color:var(--ink-900);cursor:pointer;box-shadow:var(--shadow-sm)">' + options(list, value) + '</select>' + chevron(10, 'var(--ink-500)') + '</div>';
+    if (tab === 'overview' || tab === 'sites') {
+      h += '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">' + (tab === 'overview' ? sel('site-sel', siteOpts, site, act(e => set({site: e.target.value})), single) : '') +
+        '<div style="display:flex;gap:2px;padding:3px;background:var(--ink-050);border-radius:10px">' + PERIODS.map(([k, l]) => '<button data-act="' + act(() => set({period: k})) + '" style="border:0;border-radius:var(--radius-pill);padding:5px 12px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;background:' + (period === k ? 'var(--white)' : 'transparent') + ';color:' + (period === k ? 'var(--ink-900)' : 'var(--ink-500)') + ';box-shadow:' + (period === k ? '0 1px 2px rgba(24,24,27,.12)' : 'none') + '">' + l + '</button>').join('') + '</div></div>';
+    }
+    const camSite = S.camSite && ops.includes(S.camSite) ? S.camSite : ops[0];
+    if (tab === 'cameras' && ops.length) h += sel('cam-sel', ops.map(id => ({v: id, l: 'ISWM ' + byId(id).name})), camSite, act(e => set({camSite: e.target.value})), single);
+    if (tab === 'reports') h += '<div style="display:flex;flex-wrap:wrap;gap:8px"><button class="h-green050" data-act="' + act(() => download('xls')) + '" style="height:36px;padding:0 12px;border:1px solid var(--ink-100);border-radius:var(--radius-pill);background:var(--white);color:var(--ink-900);font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:8px">' + dlIcon + 'Excel</button><button class="h-green7" data-act="' + act(() => download('csv')) + '" style="height:36px;padding:0 16px;border:0;border-radius:var(--radius-pill);background:var(--green-600);color:var(--white);font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:8px">' + dlIcon + 'Download CSV</button></div>';
+    h += '</div>';
+    if (!ops.length) h += '<div style="color:var(--ink-500)">None of your ULBs is in operation yet.</div>';
+    else if (tab === 'overview') h += overview(ids, from, to, days, period);
+    else if (tab === 'sites') h += sitesTab(sc, ops, from, to, days);
+    else if (tab === 'cameras') h += camerasTab(camSite);
+    else if (tab === 'reports') h += reportsTab(ops, single);
+    h += '<div style="font-size:12px;color:var(--ink-500)">' + (DEMO ? 'Daily figures are sample data · ' : '') + 'net weight counts complete records only (gross and tare)</div></div>';
+    return h;
+  }
+  const dlIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>';
+  const loading = '<div style="color:var(--ink-500);padding:20px 0">Loading…</div>';
+
+  function overview(ids, from, to, days, period) {
+    const tr = trips(ids, from, to), feedTr = trips(ids, ME.today, ME.today);
+    if (!tr) return loading;
+    const m = metrics(tr, days, ids), synced = ids.filter(syncOk).length;
+    const stock = DEMO ? sum(ids, id => byId(id).cap * .62 * 21) : null;
+    const kpis = [{label: 'Collection trips', value: fN(m.trips), unit: '', sub: fN(m.veh) + ' vehicles · ' + fN(m.outTrips) + ' outward'},
+      {label: 'Waste received', value: fT(m.recv), unit: 't', sub: pct(m.recv, m.cap) + ' of plant capacity'},
+      {label: 'Windrowed', value: fT(m.wind), unit: 't', sub: pct(m.wind, m.recv) + ' of received'},
+      {label: 'Recycled', value: fT(m.rec), unit: 't', sub: '+ ' + fT(m.rdf) + ' t RDF'},
+      {label: 'Sent out', value: fT(m.disp), unit: 't', sub: fN(m.outTrips) + ' outward trips'},
+      {label: 'Kept from landfill', value: m.recv ? Math.round(m.div * 100) : '—', unit: m.recv ? '%' : '', sub: fT(m.inert) + ' t inerts to landfill', color: 'var(--green-600)'}];
+    const kpis2 = [['Avg load per trip', fT(m.avg) + ' t'], ['Compost produced', fT(m.comp) + ' t'], ['Windrow stock now', stock == null ? '—' : fN(Math.round(stock)) + ' t'],
+      ['Incomplete records', fN(m.inc), m.inc ? 'var(--amber-600)' : ''], ['Plants synced', synced + ' / ' + ids.length, synced < ids.length ? 'var(--red-600)' : '']];
+    let bars, tTitle, tNote;
+    if (period === 'today') {
+      const c = new Array(24).fill(0); tr.forEach(t => { if (t.dir === 'IN') c[Math.floor(t.min / 60)]++; });
+      const mx = Math.max(1, ...c), nh = nowI().getHours();
+      bars = c.map((v, hr) => ({h: hr > nh ? 0 : Math.max(2, v / mx * 100), bg: hr === nh ? 'var(--green-600)' : 'var(--green-200)', lab: hr % 3 === 0 ? p2(hr) : '', tip: p2(hr) + ':00 — ' + v + ' trips'}));
+      tTitle = 'Trips by hour'; tNote = 'Inward trips · current hour highlighted';
+    } else if (period === 'year') {
+      const t0 = parse(ME.today), y = t0.getFullYear(), cm = t0.getMonth(), c = new Array(12).fill(0), M = 'JFMAMJJASOND';
+      tr.forEach(t => { if (t.dir === 'IN' && t.net) c[+t.date.slice(5, 7) - 1] += t.net / 1000; });
+      const mx = Math.max(1, ...c);
+      bars = c.map((v, i) => ({h: i > cm ? 0 : Math.max(v ? 2 : 0, v / mx * 100), bg: i === cm ? 'var(--green-600)' : 'var(--green-200)', lab: M[i], tip: M[i] + ' ' + y + ' — ' + fT(v) + ' t'}));
+      tTitle = 'Waste received by month'; tNote = 'Tonnes · plants operational since ' + parse(ME.op_start).toLocaleDateString('en-IN', {day: 'numeric', month: 'long'});
+    } else {
+      const c = {}; tr.forEach(t => { if (t.dir === 'IN' && t.net) c[t.date] = (c[t.date] || 0) + t.net / 1000; });
+      const dl = []; for (let i = 0; i < days; i++) dl.push(ymd(addD(parse(from), i)));
+      const mx = Math.max(1, ...dl.map(d => c[d] || 0));
+      bars = dl.map((d, i) => ({h: Math.max(2, (c[d] || 0) / mx * 100), bg: d === ME.today ? 'var(--green-600)' : 'var(--green-200)', lab: (days <= 7 || i % 5 === 0) ? d.slice(8) : '', tip: d + ' — ' + fT(c[d] || 0) + ' t'}));
+      tTitle = 'Waste received by day'; tNote = 'Tonnes · today highlighted';
+    }
+    const fl = [['Received at weighbridge', m.recv, 1], ['Windrowed for composting', m.wind], ['Compost dispatched', m.comp], ['RDF to cement plants', m.rdf], ['Recyclables sold', m.rec], ['Inerts to landfill', m.inert]];
+    const dm = {}; tr.forEach(t => { if (t.dir === 'OUT') { const o = dm[t.dest] || (dm[t.dest] = {name: t.dest || '—', mat: t.mat, trips: 0, net: 0}); o.trips++; o.net += (t.net || 0) / 1000; } });
+    const dests = Object.values(dm).sort((a, b) => b.net - a.net);
+    const feed = (feedTr || []).slice().sort((a, b) => b.min - a.min).slice(0, 8);
+    const kpiCols = W() >= 1200 ? 'repeat(6,minmax(0,1fr))' : W() >= 600 ? 'repeat(3,minmax(0,1fr))' : 'repeat(2,minmax(0,1fr))';
+    return '<div style="display:grid;grid-template-columns:' + kpiCols + ';gap:12px">' + kpis.map(k => '<div style="background:var(--white);border:1px solid var(--ink-100);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:18px 20px;display:flex;flex-direction:column;gap:6px;min-width:0"><div style="font-size:13px;color:var(--ink-500);font-weight:700">' + esc(k.label) + '</div><div style="display:flex;align-items:baseline;gap:4px"><span style="font-size:30px;font-weight:400;letter-spacing:-.015em;line-height:1.1;font-variant-numeric:tabular-nums;color:' + (k.color || 'var(--ink-900)') + '">' + esc(k.value) + '</span><span style="font-size:15px;color:var(--ink-500);font-weight:700">' + esc(k.unit) + '</span></div><div style="font-size:12px;color:var(--ink-500)">' + esc(k.sub) + '</div></div>').join('') + '</div>' +
+      card(kpis2.map(([l, v, c]) => '<div style="flex:1 1 170px;padding:12px 20px;border-right:1px solid var(--ink-050);border-top:1px solid var(--ink-050);margin-top:-1px;display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:13px;color:var(--ink-500)">' + esc(l) + '</span><span style="font-size:14px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums;color:' + (c || 'var(--ink-900)') + '">' + esc(v) + '</span></div>').join(''), 'display:flex;flex-wrap:wrap;overflow:hidden') +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:12px">' +
+      card(titleBlock(tTitle, tNote) + barsHtml(bars, 190, 4, 47.5), 'padding:20px;display:flex;flex-direction:column;gap:18px;min-width:0') +
+      card(titleBlock('Where the waste went', 'Share of waste received') + fl.map(([l, v, b]) => '<div style="display:flex;flex-direction:column;gap:6px"><div style="display:flex;justify-content:space-between;gap:12px;font-size:13px"><span style="color:var(--ink-700);font-weight:' + (b ? 600 : 400) + '">' + esc(l) + '</span><span style="font-variant-numeric:tabular-nums;white-space:nowrap"><span style="font-weight:700">' + fT(v) + ' t</span><span style="color:var(--ink-500)"> · ' + pct(v, m.recv) + '</span></span></div><div style="height:6px;background:var(--ink-050);border-radius:999px;overflow:hidden"><div style="height:100%;width:' + (m.recv ? Math.min(100, v / m.recv * 100) : 0) + '%;background:' + (b ? 'var(--ink-900)' : l.startsWith('Inerts') ? 'var(--red-600)' : 'var(--green-600)') + ';border-radius:999px"></div></div></div>').join('') +
+        '<div style="font-size:12px;color:var(--ink-500);margin-top:auto">Rest is in process on windrows or lost as moisture (~' + pct(Math.max(0, m.recv - m.disp), m.recv) + ').</div>', 'padding:20px;display:flex;flex-direction:column;gap:14px;min-width:0') + '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:12px">' +
+      card('<div style="padding:18px 20px 14px">' + titleBlock('Outward destinations', PERIODS.find(p => p[0] === period)[1]) + '</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:14px"><thead><tr>' + th('Destination') + th('Trips', 'right') + th('Tonnes', 'right') + th('Share', 'right') + '</tr></thead><tbody>' +
+        dests.map(d => '<tr>' + td('<div style="font-weight:700">' + esc(d.name) + '</div><div style="font-size:12px;color:var(--ink-500)">' + esc(d.mat) + '</div>') + td(fN(d.trips), 'text-align:right;font-variant-numeric:tabular-nums') + td(fT(d.net), 'text-align:right;font-variant-numeric:tabular-nums;font-weight:700') + td(pct(d.net, m.disp), 'text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-500)') + '</tr>').join('') + '</tbody></table></div>' +
+        (dests.length ? '' : '<div style="padding:20px;color:var(--ink-500);font-size:13px">No outward trips yet in this period.</div>'), 'overflow:hidden;min-width:0') +
+      card('<div style="padding:18px 20px 14px">' + titleBlock('Latest weighments', 'Today · new ones appear as they are saved') + '</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:14px"><thead><tr>' + th('Time') + th('Vehicle') + th('Type') + th('Net', 'right') + '</tr></thead><tbody>' +
+        feed.map(t => '<tr>' + td(hm(t.min), 'font-variant-numeric:tabular-nums;color:var(--ink-700)') + td('<div style="font-family:var(--font-mono);font-size:13px;white-space:nowrap">' + esc(t.veh) + '</div><div style="font-size:12px;color:var(--ink-500)">' + esc(byId(t.site).name) + '</div>') +
+          td('<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap;background:' + (t.dir === 'IN' ? 'var(--ink-050)' : 'var(--green-100)') + ';color:' + (t.dir === 'IN' ? 'var(--ink-700)' : 'var(--green-700)') + '">' + (t.dir === 'IN' ? 'In' : 'Out') + ' · ' + esc(t.mat) + '</span>') +
+          td(t.net == null ? 'Tare pending' : fT(t.net / 1000) + ' t', 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:700;color:' + (t.net == null ? 'var(--amber-600)' : 'var(--ink-900)')) + '</tr>').join('') + '</tbody></table></div>' +
+        (feedTr && !feed.length ? '<div style="padding:20px;color:var(--ink-500);font-size:13px">No weighments yet today.</div>' : ''), 'overflow:hidden;min-width:0') + '</div>';
+  }
+
+  function sitesTab(sc, ops, from, to, days) {
+    const tr = trips(ops, from, to);
+    if (!tr) return loading;
+    const M = {}; ops.forEach(id => { M[id] = metrics(tr.filter(t => t.site === id), days, [id]); });
+    const rows = sc.slice().sort((a, b) => ORDER.indexOf(a.status) - ORDER.indexOf(b.status) || a.pk - b.pk || a.name.localeCompare(b.name)).map(u => {
+      const m = M[u.id], S2 = ST[u.status], op = !!m, ok = syncOk(u.id);
+      const cells = [td('<div style="font-weight:700">ISWM ' + esc(u.name) + '</div><div style="font-size:12px;color:var(--ink-500)">Pkg ' + u.pk + ' · ' + esc(u.ag) + '</div>'),
+        td('<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap;background:' + S2.bg + ';color:' + S2.fg + '"><span style="width:6px;height:6px;border-radius:50%;background:' + S2.dot + '"></span>' + S2.l + '</span>'),
+        td(u.cap + ' TPD', 'text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-700)'), td(op ? fN(m.trips) : '—', 'text-align:right;font-variant-numeric:tabular-nums'),
+        td(op ? fT(m.recv) + ' t' : '—', 'text-align:right;font-variant-numeric:tabular-nums;font-weight:700'), td(op ? pct(m.recv, m.cap) : '—', 'text-align:right;font-variant-numeric:tabular-nums'),
+        td(op && m.recv ? pct(m.div, 1) : '—', 'text-align:right;font-variant-numeric:tabular-nums'), td(op ? fN(m.inc) : '—', 'text-align:right;font-variant-numeric:tabular-nums;color:' + (op && m.inc ? 'var(--amber-600)' : 'var(--ink-900)')),
+        td(op ? '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap;background:' + (ok ? 'var(--green-100)' : 'var(--red-100)') + ';color:' + (ok ? 'var(--green-700)' : 'var(--red-600)') + '"><span style="width:6px;height:6px;border-radius:50%;background:currentColor"></span>' + esc(syncText(u.id)) + '</span>' : '')];
+      return '<tr class="h-row"' + (op ? ' data-act="' + act(() => set({site: u.id, tab: 'overview'})) + '"' : '') + ' style="cursor:' + (op ? 'pointer' : 'default') + '">' + cells.join('') + '</tr>';
     });
-    box.innerHTML = s + '</svg>';
-    if (!box._hover) {
-      box._hover = true;
-      box.addEventListener('mousemove', e => {
-        const hit = e.target.closest('.hit'), tip = $('tip');
-        box.querySelectorAll('.hit.on').forEach(x => { if (x !== hit) x.classList.remove('on'); });
-        if (!hit) { tip.hidden = true; return; }
-        hit.classList.add('on');
-        tip.innerHTML = box._chart.opt.tip(+hit.dataset.i);
-        tip.hidden = false;
-        let left = e.clientX + 14;
-        if (left + tip.offsetWidth > window.innerWidth - 8) left = e.clientX - tip.offsetWidth - 14;
-        tip.style.left = left + 'px'; tip.style.top = (e.clientY + 12) + 'px';
-      });
-      box.addEventListener('mouseleave', () => { $('tip').hidden = true; box.querySelectorAll('.hit.on').forEach(x => x.classList.remove('on')); });
-    }
-  }
-  const redraw = box => { if (box._chart && !box.hidden) bars(box, box._chart.labels, box._chart.series, box._chart.opt); };
-  window.addEventListener('resize', () => document.querySelectorAll('.chart').forEach(redraw));
-  // a bar with 4px rounded top ends, flat on the baseline
-  const bar = (x, y, w, h, r) => 'M' + x + ',' + (y + h) + 'V' + (y + r) + 'Q' + x + ',' + y + ' ' + (x + r) + ',' + y + 'H' + (x + w - r) + 'Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + r) + 'V' + (y + h) + 'Z';
-  const niceStep = raw => { const p = Math.pow(10, Math.floor(Math.log10(raw || 1))), f = raw / p; return Math.max(1, (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p); };
-  const tipRow = (key, label, value) => '<div><span>' + (key ? '<i class="sw ' + key + '"></i>' : '') + esc(label) + '</span>' + value + '</div>';
-  // ranked horizontal bars: label, bar, value (one direction's colour)
-  function hbars(el, rows, key, valueOf, textOf) {
-    const max = Math.max(1, ...rows.map(valueOf));
-    el.innerHTML = rows.map(r => '<div class="hb"><span class="hb-l">' + esc(r.label) + '</span><span class="hb-t"><span class="hb-b ' + key + '" data-w="' + Math.max(1, valueOf(r) / max * 100).toFixed(1) + '"></span></span><span class="hb-v">' + textOf(r) + '</span></div>').join('') ||
-      '<div class="muted small">Nothing yet.</div>';
-  }
-  // the page's security policy blocks style="" in HTML, so bar widths are set from script
-  const applyWidths = root => root.querySelectorAll('.hb-b[data-w]').forEach(b => { b.style.width = b.dataset.w + '%'; });
-
-  // --- overview: status board ---------------------------------------------------------------------
-  function overview() {
-    let sites = [], filter = '', view = 'cards';
-    try { view = localStorage.getItem('iswm-dash-view') || 'cards'; } catch (e) {}
-    const order = {offline: 0, attention: 1, ok: 2};
-    function draw() {
-      const q = ($('find').value || '').trim().toLowerCase();
-      const rows = sites.filter(s => (!filter || s.health.state === filter) && (!q || (s.name + ' ' + s.company + ' ' + s.id).toLowerCase().includes(q)))
-        .sort((a, b) => order[a.health.state] - order[b.health.state] || a.name.localeCompare(b.name));
-      $('board').hidden = view !== 'cards'; $('table-card').hidden = view !== 'table';
-      document.querySelectorAll('#view button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
-      $('board').innerHTML = rows.map(card).join('') || '<div class="muted">No plant matches.</div>';
-      $('sites').tBodies[0].innerHTML = rows.map(tableRow).join('') || '<tr><td colspan="11" class="muted">No plant matches.</td></tr>';
-    }
-    function wbText(hh) { return hh.wb == null ? '—' : hh.wb ? 'On' + (hh.kg ? ' · ' + num(hh.kg) + ' kg' : '') : 'Off'; }
-    function card(s) {
-      const h = s.health, t = s.today || {}, st = STATE[h.state];
-      const cams = (s.cameras || []).length, probs = h.cam_problems.length;
-      return '<a class="site-card ' + st[1] + '" href="/site/' + esc(s.id) + '">' +
-        '<div class="sc-head"><div><b>' + esc(s.name) + '</b><small>' + esc(s.company) + '</small></div><span class="pill ' + st[1] + '"><span class="dot"></span>' + st[0] + '</span></div>' +
-        (h.state !== 'ok' ? '<ul class="reasons">' + h.reasons.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul>' : '') +
-        '<dl class="sc-facts">' +
-          '<dt>Last seen</dt><dd>' + esc(ago(h.seen)) + '</dd>' +
-          '<dt>Weighbridge</dt><dd class="' + (h.wb === false ? 'bad' : '') + '">' + wbText(h) + '</dd>' +
-          '<dt>Cameras</dt><dd class="' + (probs ? 'bad' : '') + '">' + (cams ? cams + (probs ? ' · ' + probs + ' not working' : ' · ok') : '—') + '</dd>' +
-          '<dt>Waiting to sync</dt><dd>' + (h.queued == null ? '—' : num(h.queued)) + '</dd>' +
-        '</dl>' +
-        '<div class="sc-today"><span><i class="sw in"></i>' + tonnes(t.in_kg) + '<small>' + trips(t.in_trips) + '</small></span>' +
-          '<span><i class="sw out"></i>' + tonnes(t.out_kg) + '<small>' + trips(t.out_trips) + '</small></span>' +
-          '<span>' + num(t.pending) + '<small>pending</small></span></div>' +
-        '<div class="sc-foot">' + (h.operator ? 'On duty: ' + esc(h.operator) : '&nbsp;') + '<span>' + (h.version ? 'v' + esc(h.version) : '') + '</span></div></a>';
-    }
-    function tableRow(s) {
-      const t = s.today || {}, h = s.health, st = STATE[h.state];
-      return '<tr class="click" data-href="/site/' + esc(s.id) + '">' +
-        '<td class="name"><a href="/site/' + esc(s.id) + '">' + esc(s.name) + '</a><small>' + esc(s.company) + '</small></td>' +
-        '<td><span class="pill ' + st[1] + '" title="' + esc(h.reasons.join(' · ')) + '"><span class="dot"></span>' + st[0] + '</span></td>' +
-        '<td>' + esc(ago(h.seen)) + '</td><td>' + wbText(h) + '</td>' +
-        '<td class="r">' + num(t.in_trips) + '</td><td class="r">' + tonnes(t.in_kg) + '</td>' +
-        '<td class="r">' + num(t.out_trips) + '</td><td class="r">' + tonnes(t.out_kg) + '</td>' +
-        '<td class="r">' + (t.pending ? '<span class="tag wait">' + t.pending + '</span>' : '0') + '</td>' +
-        '<td class="r">' + (s.cameras || []).length + '</td>' +
-        '<td class="r"><a class="btn" href="/site/' + esc(s.id) + '">Open</a></td></tr>';
-    }
-    const load = () => get('/api/sites').then(d => {
-      sites = d.sites;
-      const n = k => sites.filter(s => s.health.state === k).length, sum = k => sites.reduce((a, s) => a + ((s.today || {})[k] || 0), 0);
-      $('t-online').textContent = (sites.length - n('offline')) + ' of ' + sites.length + ' online';
-      $('t-online-s').textContent = n('attention') + ' need attention · ' + n('offline') + ' offline';
-      $('t-in').textContent = tonnes(sum('in_kg')); $('t-in-s').textContent = trips(sum('in_trips'));
-      $('t-out').textContent = tonnes(sum('out_kg')); $('t-out-s').textContent = trips(sum('out_trips'));
-      $('t-pend').textContent = num(sum('pending'));
-      $('n-all').textContent = sites.length; $('n-attention').textContent = n('attention'); $('n-offline').textContent = n('offline'); $('n-ok').textContent = n('ok');
-      $('today-label').textContent = 'Today · ' + new Date(d.date + 'T00:00:00').toLocaleDateString('en-IN', {weekday: 'long', day: 'numeric', month: 'long'});
-      $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'});
-      draw(); charts();
-    }).catch(() => { $('updated').textContent = 'Could not load. Retrying…'; });
-    function charts() {
-      const add = k => Array.from({length: 24}, (_, hr) => sites.reduce((a, s) => a + (((s.today || {})[k] || [])[hr] || 0), 0));
-      const hin = add('in_by_hour'), hout = add('out_by_hour'), hours = [...Array(24).keys()];
-      bars($('hours-chart'), hours.map(hourLabel), [{key: 'in', values: hin}, {key: 'out', values: hout}],
-        {yFmt: v => num(v), tip: i => '<b>' + hourLabel(i) + ' – ' + hourLabel((i + 1) % 24) + '</b>' + tipRow('in', 'Inward', trips(hin[i])) + tipRow('out', 'Outward', trips(hout[i]))});
-      const ranked = sites.map(s => ({label: s.name.replace(/^ISWM /, ''), kg: (s.today || {}).in_kg || 0, n: (s.today || {}).in_trips || 0})).sort((a, b) => b.kg - a.kg);
-      hbars($('rank'), ranked, 'in', r => r.kg, r => tonnes(r.kg) + ' <small>' + trips(r.n) + '</small>');
-      applyWidths($('rank'));
-    }
-    $('find').addEventListener('input', draw);
-    $('filter').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; filter = b.dataset.f; document.querySelectorAll('#filter button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
-    $('view').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; view = b.dataset.v; try { localStorage.setItem('iswm-dash-view', view); } catch (er) {} draw(); });
-    $('sites').addEventListener('click', e => { const tr = e.target.closest('tr[data-href]'); if (tr && !e.target.closest('a')) location.href = tr.dataset.href; });
-    load(); setInterval(load, 30000);
+    const ms = ops.map(id => M[id]), T = k => sum(ms, m => m[k]), recv = T('recv'), inert = T('inert'), b = 'text-align:right;font-variant-numeric:tabular-nums;font-weight:700';
+    return card('<div style="overflow-x:auto"><table style="width:100%;min-width:1040px;border-collapse:collapse;font-size:14px"><thead><tr>' + th('ULB') + th('Status') + th('Est. capacity', 'right') + th('Trips', 'right') + th('Received', 'right') + th('Utilisation', 'right') + th('Kept from landfill', 'right') + th('Incomplete', 'right') + th('Sync') + '</tr></thead><tbody>' + rows.join('') +
+      '<tr style="background:var(--green-050)">' + td('Operational total', 'font-weight:700') + td(ops.length + ' plants', 'color:var(--ink-500);font-size:12px') + td(fN(sum(ops, id => byId(id).cap)) + ' TPD', b) + td(fN(T('trips')), b) + td(fT(recv) + ' t', b) + td(pct(recv, T('cap')), b) + td(recv ? Math.round(Math.max(0, Math.min(1, 1 - inert / recv)) * 100) + '%' : '—', b) + td(fN(T('inc')), b) + td('') + '</tr></tbody></table></div>', 'overflow:hidden');
   }
 
-  // --- one plant ----------------------------------------------------------------------------------
-  function site() {
-    const sid = document.body.dataset.site;
-    let cams = [], names = {}, picked = [], q = 'normal';
-
-    // today's tiles and status
-    const loadSite = () => get('/api/sites').then(d => {
-      const s = d.sites.find(x => x.id === sid); if (!s) return;
-      const t = s.today || {}, h = s.health, st = STATE[h.state];
-      $('s-in').textContent = tonnes(t.in_kg); $('s-in-s').textContent = trips(t.in_trips || 0);
-      $('s-out').textContent = tonnes(t.out_kg); $('s-out-s').textContent = trips(t.out_trips || 0);
-      $('s-pend').textContent = num(t.pending);
-      $('s-sync').textContent = ago(s.last_sync);
-      $('s-sync-s').textContent = h.queued ? num(h.queued) + (h.queued === 1 ? ' record' : ' records') + ' waiting to send' : 'nothing waiting';
-      const probs = h.cam_problems.length;
-      $('status-strip').className = 'status-strip ' + st[1];
-      $('status-strip').innerHTML = '<span class="pill ' + st[1] + '"><span class="dot"></span>' + st[0] + '</span>' +
-        (h.state !== 'ok' ? '<span class="reasons-inline">' + h.reasons.map(esc).join(' · ') + '</span>' : '<span>Everything is working.</span>') +
-        '<span class="spacer"></span>' +
-        '<span>Last seen <b>' + esc(ago(h.seen)) + '</b></span>' +
-        '<span>Cameras <b>' + (s.cameras || []).length + (probs ? ', ' + probs + ' not working' : '') + '</b></span>' +
-        (h.operator ? '<span>On duty <b>' + esc(h.operator) + '</b></span>' : '') +
-        (h.version ? '<span>App <b>v' + esc(h.version) + '</b></span>' : '');
-      if (!cams.length && s.cameras && s.cameras.length) setCams(s.cameras);
-    }).catch(() => {});
-
-    // live weight, plant online, camera names (names come from the plant through the relay)
-    const loadLive = () => get('/api/sites/' + sid + '/live').then(l => {
-      const p = $('plant-pill');
-      p.className = 'pill ' + (l.plant_online ? 'ok' : 'offline');
-      p.innerHTML = '<span class="dot"></span>' + (l.plant_online ? 'Plant online' : 'Plant offline');
-      const w = l.weight;
-      $('weight').textContent = w && w.connected ? num(w.weight) : '—';
-      $('weight-s').textContent = !l.plant_online ? 'plant not reachable' : w && w.connected ? (w.stable ? 'steady' : 'settling') : 'weighbridge off';
-      if (l.cams && l.cams.length) setCams(l.cams);
-    }).catch(() => {});
-
-    function setCams(list) {
-      if (JSON.stringify(list) === JSON.stringify(cams)) return;
-      cams = list; names = {}; list.forEach(c => { names[c[0]] = c[1]; });
-      const opts = list.map(c => [c[0], c[1]]);
-      if (list.length > 1) opts.push([list.map(c => c[0]).join(','), 'All']);
-      $('cam-pick').innerHTML = opts.map(o => '<button data-c="' + esc(o[0]) + '"' + (o[0] === picked.join(',') ? ' class="on"' : '') + '>' + esc(o[1]) + '</button>').join('');
-      document.querySelectorAll('#cam-grid .cam b[data-c]').forEach(b => { b.textContent = names[b.dataset.c] || b.dataset.c; });
-      const keep = picked.filter(c => names[c]);
-      if (keep.length !== picked.length) { picked = keep; drawCams(); }
-    }
-    function drawCams() {
-      const g = $('cam-grid');
-      g.innerHTML = '';
-      $('cam-stop').hidden = !picked.length;
-      $('cam-note').hidden = !!picked.length;
-      document.querySelectorAll('#cam-pick button').forEach(b => b.classList.toggle('on', b.dataset.c === picked.join(',')));
-      picked.forEach(c => {
-        const d = document.createElement('div');
-        d.className = 'cam';
-        d.innerHTML = '<b data-c="' + esc(c) + '">' + esc(names[c] || c) + '</b><span>Asking the plant for pictures… (up to 20 s)</span>';
-        const img = new Image();
-        img.alt = names[c] || c;
-        img.onload = () => { const s = d.querySelector('span'); if (s) s.remove(); };
-        img.onerror = () => { const s = d.querySelector('span'); if (s) s.textContent = 'No picture. The plant may be offline. Trying again…'; setTimeout(() => { if (picked.includes(c)) img.src = src(c); }, 8000); };
-        img.src = src(c);
-        d.appendChild(img);
-        g.appendChild(d);
-      });
-    }
-    const src = c => '/cam/' + encodeURIComponent(sid) + '/' + encodeURIComponent(c) + '.mjpg?q=' + q + '&t=' + Date.now();
-    $('cam-pick').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; picked = b.dataset.c.split(','); drawCams(); });
-    $('cam-q').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; q = b.dataset.q; document.querySelectorAll('#cam-q button').forEach(x => x.classList.toggle('on', x === b)); if (picked.length) drawCams(); });
-    $('cam-stop').addEventListener('click', () => { picked = []; drawCams(); });
-
-    // one day: hourly trips, shifts, breakdowns, vehicles, pending, trips
-    let tripRows = [], dir = '';
-    $('day').value = isoToday(); $('day').max = isoToday();
-    function setQuick() {
-      const y = new Date(); y.setDate(y.getDate() - 1);
-      document.querySelectorAll('#day-quick button').forEach(b => b.classList.toggle('on', $('day').value === (b.dataset.o === '0' ? isoToday() : isoDay(y))));
-    }
-    const loadDay = () => {
-      const day = $('day').value;
-      $('csv').href = '/api/sites/' + sid + '/trips.csv?date=' + day;
-      setQuick();
-      get('/api/sites/' + sid + '/day?date=' + day).then(drawDay).catch(() => {});
-      get('/api/sites/' + sid + '/trips?date=' + day).then(d => { tripRows = d.trips; drawTrips(); }).catch(() => {});
-    };
-    function drawDay(r) {
-      const hin = r.hours.map(x => x.in), hout = r.hours.map(x => x.out);
-      bars($('hours-chart'), r.hours.map(x => hourLabel(x.hour)), [{key: 'in', values: hin}, {key: 'out', values: hout}],
-        {yFmt: v => num(v), tip: i => { const x = r.hours[i]; return '<b>' + hourLabel(i) + ' – ' + hourLabel((i + 1) % 24) + '</b>' + tipRow('in', 'Inward', trips(x.in) + ' · ' + tonnes(x.in_kg)) + tipRow('out', 'Outward', trips(x.out) + ' · ' + tonnes(x.out_kg)); }});
-      $('busiest').textContent = r.busiest ? 'Busiest hour: ' + hourLabel(r.busiest.hour) + ' – ' + hourLabel((r.busiest.hour + 1) % 24) + ' (' + trips(r.busiest.in + r.busiest.out) + ')' : 'No trips this day';
-      $('day-sum').textContent = 'In ' + tonnes(r.in.kg) + ' (' + trips(r.in.done) + ') · Out ' + tonnes(r.out.kg) + ' (' + trips(r.out.done) + ')' + (r.pending.length ? ' · ' + r.pending.length + ' pending' : '');
-      $('shifts').tBodies[0].innerHTML = r.shifts.map(s => '<tr><td><b>' + esc(s.label) + '</b></td><td>' + esc(s.time) + '</td><td class="r">' + s.in.trips + '</td><td class="r">' + tonnes(s.in.kg) + '</td><td class="r">' + s.out.trips + '</td><td class="r">' + tonnes(s.out.kg) + '</td></tr>').join('');
-      $('pending-n').textContent = trips(r.pending.length);
-      $('pending').tBodies[0].innerHTML = r.pending.map(t => '<tr><td>' + esc(t.time.slice(11, 16)) + '</td><td>' + esc(t.id) + '</td><td><b>' + esc(t.vno) + '</b></td><td class="r">' + kg(t.gross_kg) + '</td></tr>').join('') || '<tr><td colspan="4" class="muted">None. Every vehicle has its empty weight.</td></tr>';
-      const val = x => x.kg, txt = x => tonnes(x.kg) + ' <small>' + trips(x.trips) + '</small>';
-      hbars($('b-waste'), r.waste, 'in', val, txt); hbars($('b-source'), r.source, 'in', val, txt);
-      hbars($('b-material'), r.material, 'out', val, txt); hbars($('b-dest'), r.dest, 'out', val, txt);
-      ['b-waste', 'b-source', 'b-material', 'b-dest'].forEach(id => applyWidths($(id)));
-      $('vehicles').tBodies[0].innerHTML = r.vehicles.map(v => '<tr><td><b>' + esc(v.vno) + '</b></td><td class="r">' + v.trips + '</td><td class="r">' + (v.in_kg ? tonnes(v.in_kg) : '—') + '</td><td class="r">' + (v.out_kg ? tonnes(v.out_kg) : '—') + '</td><td class="r">' + (v.pending ? '<span class="tag wait">' + v.pending + '</span>' : '0') + '</td></tr>').join('') || '<tr><td colspan="5" class="muted">No trips this day.</td></tr>';
-    }
-    function drawTrips() {
-      const f = ($('trip-find').value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-      const rows = tripRows.filter(r => (!dir || r.dir === dir) && (!f || (String(r.vno) + r.id).toUpperCase().replace(/[^A-Z0-9]/g, '').includes(f)));
-      $('trips').tBodies[0].innerHTML = rows.map(r => '<tr><td>' + esc((r.time || '').slice(11, 16)) + '</td><td><span class="dir ' + esc(r.dir) + '"></span>' + esc(r.id) + '</td><td><b>' + esc(r.vno) + '</b></td><td>' + esc(r.what) + '</td><td>' + esc(r.where) + '</td>' +
-        '<td class="r">' + (kg(r.gross_kg) || '—') + '</td><td class="r">' + (kg(r.tare_kg) || '—') + '</td><td class="r">' + (r.net_kg == null ? '<span class="tag pending">Pending</span>' : '<b>' + kg(r.net_kg) + '</b>') + '</td><td>' + esc(r.operator) + '</td></tr>').join('') ||
-        '<tr><td colspan="9" class="muted">No trips for this choice.</td></tr>';
-      const done = rows.filter(r => r.net_kg != null);
-      $('trip-count').textContent = trips(rows.length) + ' · net ' + tonnes(done.reduce((a, r) => a + r.net_kg, 0));
-    }
-    $('day').addEventListener('change', loadDay);
-    $('day-quick').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; const d = new Date(); d.setDate(d.getDate() - Number(b.dataset.o)); $('day').value = isoDay(d); loadDay(); });
-    $('trip-find').addEventListener('input', drawTrips);
-    $('trip-dir').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; dir = b.dataset.d; document.querySelectorAll('#trip-dir button').forEach(x => x.classList.toggle('on', x === b)); drawTrips(); });
-
-    // 14-day chart and its table
-    let days = [];
-    const fmtDay = d => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', {weekday: 'short', day: 'numeric', month: 'short'});
-    const loadDaily = () => get('/api/sites/' + sid + '/daily').then(d => {
-      days = d.days;
-      bars($('chart'), days.map((x, i) => { const dt = new Date(x.date + 'T00:00:00'); return dt.getDate() + (dt.getDate() === 1 || i === 0 ? ' ' + dt.toLocaleDateString('en-IN', {month: 'short'}) : ''); }),
-        [{key: 'in', values: days.map(x => x.in_kg / 1000)}, {key: 'out', values: days.map(x => x.out_kg / 1000)}],
-        {padL: 52, yFmt: v => num(v) + ' t', tip: i => { const x = days[i]; return '<b>' + fmtDay(x.date) + '</b>' + tipRow('in', 'Inward', tonnes(x.in_kg) + ' · ' + trips(x.in_trips)) + tipRow('out', 'Outward', tonnes(x.out_kg) + ' · ' + trips(x.out_trips)) + (x.pending ? tipRow('', 'Pending', x.pending) : ''); }});
-      $('chart-table').innerHTML = '<table class="grid"><thead><tr><th>Day</th><th class="r">Inward trips</th><th class="r">Inward</th><th class="r">Outward trips</th><th class="r">Outward</th><th class="r">Pending</th></tr></thead><tbody>' +
-        days.slice().reverse().map(x => '<tr><td>' + fmtDay(x.date) + '</td><td class="r">' + x.in_trips + '</td><td class="r">' + tonnes(x.in_kg) + '</td><td class="r">' + x.out_trips + '</td><td class="r">' + tonnes(x.out_kg) + '</td><td class="r">' + x.pending + '</td></tr>').join('') + '</tbody></table>';
-    }).catch(() => {});
-    $('chart-table-toggle').addEventListener('click', e => {
-      const on = $('chart-table').hidden;
-      $('chart-table').hidden = !on; $('chart').hidden = on;
-      e.target.textContent = on ? 'Show as chart' : 'Show as table'; e.target.setAttribute('aria-pressed', String(on));
-      if (!on) redraw($('chart'));
+  // cameras: the plant's cameras, with the names given at the plant, through the ISWM relay
+  const CAMS = {};
+  function camerasTab(cs) {
+    if (!CAMS[cs]) { CAMS[cs] = {list: null}; getJSON('/api/cams/' + cs).then(d => { CAMS[cs].list = d.cams; draw(); }).catch(() => { CAMS[cs].list = []; draw(); }); }
+    const td0 = trips([cs], ME.today, ME.today) || [], last = td0.slice().sort((a, b) => b.min - a.min)[0], m = metrics(td0, 1, [cs]), off = !syncOk(cs) && syncMin(cs) != null;
+    const stats = [['Trips today', fN(m.trips)], ['Received today', fT(m.recv) + ' t'], ['Last weighment', last ? hm(last.min) + ' · ' + last.veh : '—'], ['Last sync', syncText(cs)]];
+    const list = CAMS[cs].list, q = S.camQ || 'normal';
+    const now = nowI(), ts = ymd(now) + ' ' + p2(now.getHours()) + ':' + p2(now.getMinutes());
+    let h = card(stats.map(([l, v]) => '<div style="flex:1 1 170px;padding:12px 20px;border-right:1px solid var(--ink-050);border-top:1px solid var(--ink-050);margin-top:-1px;display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:13px;color:var(--ink-500)">' + esc(l) + '</span><span style="font-size:14px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums">' + esc(v) + '</span></div>').join(''), 'display:flex;flex-wrap:wrap;overflow:hidden');
+    h += '<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px"><div style="font-size:13px;color:var(--ink-500)">' + (list && list.length ? 'Pictures come from the plant only while this page is open, and stop after 10 minutes' : list ? 'This plant has not shared its cameras yet' : 'Asking the plant for its cameras…') + '</div>' +
+      '<div style="display:flex;gap:2px;padding:3px;background:var(--ink-050);border-radius:10px">' + [['low', 'Low data'], ['normal', 'Normal'], ['high', 'Sharper']].map(([k, l]) => '<button data-act="' + act(() => set({camQ: k})) + '" style="border:0;border-radius:var(--radius-pill);padding:5px 12px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;background:' + (q === k ? 'var(--white)' : 'transparent') + ';color:' + (q === k ? 'var(--ink-900)' : 'var(--ink-500)') + ';box-shadow:' + (q === k ? '0 1px 2px rgba(24,24,27,.12)' : 'none') + '">' + l + '</button>').join('') + '</div></div>';
+    h += '<div id="cam-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:12px">' + (list || []).map((c, i) =>
+      '<div style="position:relative;aspect-ratio:16/9;background:var(--ink-900);border-radius:var(--radius-lg);overflow:hidden;color:#ffffff">' +
+      '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--ink-300);font-size:13px;text-align:center;padding:0 24px">' + (off ? 'Plant is not connected' : 'Connecting to the plant… (up to 20 s)') + '</div>' +
+      (off ? '' : '<img data-cam="' + esc(c[0]) + '" alt="' + esc(c[1]) + '" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">') +
+      '<div style="position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:13px;font-weight:700;background:rgba(0,0,0,.55);padding:3px 10px;border-radius:999px;white-space:nowrap">' + esc(c[1]) + '</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.04em;background:' + (off ? 'rgba(255,255,255,.18)' : '#dc2626') + ';padding:3px 8px;border-radius:999px"><span style="width:6px;height:6px;border-radius:50%;background:#ffffff"></span>' + (off ? 'OFFLINE' : 'LIVE') + '</span></div>' +
+      '<div style="position:absolute;bottom:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:flex-end;gap:8px;flex-wrap:wrap"><span style="font-family:var(--font-mono);font-size:12px;background:rgba(0,0,0,.55);padding:3px 8px;border-radius:6px">' + esc(off ? 'Last sync ' + syncText(cs) : ts) + '</span>' + (i < 2 && last ? '<span style="font-size:12px;background:rgba(0,0,0,.55);padding:3px 8px;border-radius:6px">' + esc(last.veh + ' · ' + (last.net != null ? fT(last.net / 1000) + ' t' : 'tare pending')) + '</span>' : '') + '</div></div>').join('') + '</div>';
+    setTimeout(() => attachCams(cs, q), 0);
+    return h;
+  }
+  // keep each camera's stream open across redraws, so the picture doesn't restart every few seconds
+  const STREAMS = {};
+  function attachCams(cs, q) {
+    document.querySelectorAll('#cam-grid img[data-cam]').forEach(img => {
+      const key = cs + '/' + img.dataset.cam + '/' + q;
+      let s = STREAMS[key];
+      if (!s) {
+        s = STREAMS[key] = new Image();
+        s.src = '/cam/' + encodeURIComponent(cs) + '/' + encodeURIComponent(img.dataset.cam) + '.mjpg?q=' + q;
+      }
+      s.alt = img.alt;
+      s.setAttribute('style', img.getAttribute('style'));
+      s.setAttribute('data-cam', img.dataset.cam);
+      img.replaceWith(s);
     });
-
-    loadSite(); loadLive(); loadDay(); loadDaily();
-    setInterval(loadLive, 3000);
-    setInterval(() => { loadSite(); if ($('day').value === isoToday()) loadDay(); }, 60000);
+    Object.keys(STREAMS).forEach(k => { if (!document.body.contains(STREAMS[k])) { STREAMS[k].src = ''; delete STREAMS[k]; } });
   }
 
-  if (document.body.dataset.page === 'overview') overview();
-  if (document.body.dataset.page === 'site') site();
+  // reports
+  let REPORT = null;
+  function reportsTab(ops, single) {
+    const t = parse(ME.today);
+    const rFrom = S.rFrom || ymd(addD(t, -6)), rTo = S.rTo || ME.today, rGroup = S.rGroup || 'vehicle', rDir = S.rDir || 'all';
+    const rSite = single ? ops[0] : (S.rSite || 'ALL'), rids = rSite === 'ALL' ? ops : [rSite];
+    let tr = trips(rids, rFrom, rTo);
+    const siteOpts = (single ? [] : [{v: 'ALL', l: 'All operational plants (' + ops.length + ')'}]).concat(ops.map(id => ({v: id, l: 'ISWM ' + byId(id).name})));
+    const presets = [['Today', ME.today, ME.today], ['Yesterday', ymd(addD(t, -1)), ymd(addD(t, -1))], ['Last 7 days', ymd(addD(t, -6)), ME.today], ['This month', ymd(new Date(t.getFullYear(), t.getMonth(), 1)), ME.today], ['This year', t.getFullYear() + '-01-01', ME.today]];
+    const input = 'width:auto;min-width:0;height:36px;padding:0 12px;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--white);font:inherit;font-size:14px;color:var(--ink-900);outline:none;box-shadow:var(--shadow-sm);flex:1 1 130px';
+    const selStyle = 'appearance:none;-webkit-appearance:none;width:100%;min-width:0;height:36px;padding:0 32px 0 12px;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--white);font:inherit;font-size:14px;color:var(--ink-900);cursor:pointer;box-shadow:var(--shadow-sm)';
+    let h = card('<div style="display:flex;flex-direction:column;gap:10px;min-width:0"><div style="font-size:13px;font-weight:700;color:var(--ink-700)">Group trips by</div><div style="display:flex;flex-wrap:wrap;gap:6px">' +
+      GROUPS.map(([k, l]) => '<button data-act="' + act(() => set({rGroup: k})) + '" style="height:30px;padding:0 12px;border-radius:999px;border:1px solid ' + (rGroup === k ? 'var(--green-600)' : 'var(--ink-200)') + ';background:' + (rGroup === k ? 'var(--green-600)' : 'var(--white)') + ';color:' + (rGroup === k ? 'var(--white)' : 'var(--ink-700)') + ';font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">' + l + '</button>').join('') + '</div></div>' +
+      '<div style="display:flex;flex-direction:column;gap:10px;min-width:0"><div style="font-size:13px;font-weight:700;color:var(--ink-700)">Date range</div><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
+      '<input id="r-from" type="date" aria-label="From" value="' + rFrom + '" max="' + ME.today + '" data-chg="' + act(e => e.target.value && set({rFrom: e.target.value})) + '" style="' + input + '"><span style="color:var(--ink-500)">→</span>' +
+      '<input id="r-to" type="date" aria-label="To" value="' + rTo + '" max="' + ME.today + '" data-chg="' + act(e => e.target.value && set({rTo: e.target.value})) + '" style="' + input + '"></div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:4px 12px">' + presets.map(([l, f, to]) => '<button class="h-textgreen7" data-act="' + act(() => set({rFrom: f, rTo: to})) + '" style="border:0;background:none;padding:0;font-size:13px;color:var(--green-600);font-weight:700;cursor:pointer">' + l + '</button>').join('') + '</div></div>' +
+      '<div style="display:flex;flex-direction:column;gap:10px;min-width:0"><div style="font-size:13px;font-weight:700;color:var(--ink-700)">Filter</div>' +
+      '<div style="position:relative"><select id="r-site" aria-label="Plant" data-chg="' + act(e => set({rSite: e.target.value})) + '"' + (single ? ' disabled' : '') + ' style="' + selStyle + '">' + options(siteOpts, rSite) + '</select>' + chevron(10, 'var(--ink-500)') + '</div>' +
+      '<div style="position:relative"><select id="r-dir" aria-label="Direction" data-chg="' + act(e => set({rDir: e.target.value})) + '" style="' + selStyle + '">' + options([{v: 'all', l: 'Inward and outward'}, {v: 'IN', l: 'Inward only'}, {v: 'OUT', l: 'Outward only'}], rDir) + '</select>' + chevron(10, 'var(--ink-500)') + '</div></div>',
+      'padding:20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:20px 28px');
+    if (!tr) { REPORT = null; return h + loading; }
+    if (rDir !== 'all') tr = tr.filter(x => x.dir === rDir);
+    const R = 'right', name = id => byId(id).name;
+    let cols, rows, total;
+    if (rGroup === 'trip') {
+      cols = [['Ticket'], ['Date'], ['Time'], ['Site'], ['Vehicle'], ['Direction'], ['Material'], ['Gross kg', R], ['Tare kg', R], ['Net kg', R], ['Shift'], ['Destination']];
+      rows = tr.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.min - b.min).map(x => [x.ticket, x.date, hm(x.min), name(x.site), x.veh, x.dir === 'IN' ? 'Inward' : 'Outward', x.mat, x.gross, x.tare == null ? 'Pending' : x.tare, x.net == null ? 'Pending' : x.net, shiftOf(x.min), x.dest || '—']);
+      total = ['Total', tr.length + ' trips', '', '', '', '', '', '', '', fN(sum(tr, x => x.net)), '', ''];
+    } else {
+      const kf = {vehicle: x => x.veh, hour: x => p2(Math.floor(x.min / 60)) + ':00–' + p2(Math.floor(x.min / 60)) + ':59', shift: x => shiftOf(x.min), day: x => x.date, month: x => x.date.slice(0, 7), year: x => x.date.slice(0, 4), site: x => name(x.site), material: x => x.mat, dest: x => x.dest || '— (inward)'}[rGroup];
+      const mp = new Map();
+      for (const x of tr) { const k = kf(x); let o = mp.get(k); if (!o) { o = {k, n: 0, c: 0, net: 0, in: 0, out: 0, v: new Set()}; mp.set(k, o); } o.n++; x.dir === 'IN' ? o.in++ : o.out++; o.v.add(x.veh); if (x.net != null) { o.c++; o.net += x.net; } }
+      const arr = [...mp.values()].sort(['vehicle', 'dest', 'material'].includes(rGroup) ? (a, b) => b.n - a.n : (a, b) => a.k < b.k ? -1 : 1);
+      cols = [[GROUPS.find(g => g[0] === rGroup)[1]], ['Trips', R], ['Inward', R], ['Outward', R], ['Vehicles', R], ['Net (t)', R], ['Avg load (t)', R], ['Incomplete', R]];
+      rows = arr.map(o => [o.k, o.n, o.in, o.out, o.v.size, fT(o.net / 1000), o.c ? fT(o.net / o.c / 1000) : '—', o.n - o.c]);
+      const N = sum(arr, o => o.n), C = sum(arr, o => o.c), NET = sum(arr, o => o.net);
+      total = ['Total', fN(N), fN(sum(arr, o => o.in)), fN(sum(arr, o => o.out)), new Set(tr.map(x => x.veh)).size, fT(NET / 1000), C ? fT(NET / C / 1000) : '—', fN(N - C)];
+    }
+    REPORT = {cols, rows, total, name: 'ISWM_trips_by_' + rGroup + '_' + rFrom + '_to_' + rTo};
+    const al = c => c[1] || 'left', cap = 200;
+    h += card('<div style="padding:18px 20px 14px">' + titleBlock('Trips by ' + GROUPS.find(g => g[0] === rGroup)[1].toLowerCase(), fN(tr.length) + ' trips · ' + rFrom + ' to ' + rTo + ' · ' + (rids.length === 1 ? 'ISWM ' + name(rids[0]) : rids.length + ' plants') + ' · ' + {all: 'inward + outward', IN: 'inward', OUT: 'outward'}[rDir]) + '</div>' +
+      '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums"><thead><tr>' + cols.map(c => th(c[0], al(c))).join('') + '</tr></thead><tbody>' +
+      rows.slice(0, cap).map(r => '<tr class="h-row">' + r.map((v, i) => td(esc(typeof v === 'number' ? fN(v) : v), 'text-align:' + al(cols[i]) + ';white-space:nowrap;color:' + (v === 'Pending' ? 'var(--amber-600)' : 'inherit'))).join('') + '</tr>').join('') +
+      '<tr style="background:var(--green-050)">' + total.map((v, i) => td(esc(v), 'font-weight:700;text-align:' + al(cols[i]) + ';white-space:nowrap')).join('') + '</tr></tbody></table></div>' +
+      (rows.length > cap ? '<div style="padding:12px 20px;font-size:12px;color:var(--ink-500)">Showing first ' + cap + ' of ' + fN(rows.length) + ' rows — the download has all of them.</div>' : ''), 'overflow:hidden');
+    return h;
+  }
+  function download(kind) {
+    if (!REPORT) return;
+    const {cols, rows, total, name} = REPORT;
+    const save = (content, type, ext) => { const b = new Blob([content], {type}), a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name + ext; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); };
+    // a cell starting with = + - @ would run as a formula in Excel
+    const cell = v => { v = String(v); return /^[=+\-@]/.test(v) ? "'" + v : v; };
+    if (kind === 'csv') {
+      const q = v => { v = cell(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+      save('﻿' + [cols.map(c => c[0]), ...rows, total].map(r => r.map(q).join(',')).join('\n'), 'text/csv', '.csv');
+    } else {
+      const x = v => esc(cell(v));
+      save('<html><head><meta charset="utf-8"></head><body><table border="1"><tr>' + cols.map(c => '<th>' + x(c[0]) + '</th>').join('') + '</tr>' + rows.map(r => '<tr>' + r.map(v => '<td>' + x(v) + '</td>').join('') + '</tr>').join('') + '<tr>' + total.map(v => '<td><b>' + x(v) + '</b></td>').join('') + '</tr></table></body></html>', 'application/vnd.ms-excel', '.xls');
+    }
+  }
+
+  // start
+  if (PAGE === 'landing') { draw(); loadLive(); setInterval(() => { if ((S.lTab || 'live') === 'live' && LIVE && S.lDay === LIVE.today) loadLive(); }, 30000); }
+  if (PAGE === 'app') {
+    draw();
+    getJSON('/api/me').then(d => { ME = d; refreshToday(); setInterval(refreshToday, 30000); }).catch(() => {});
+  }
 })();
