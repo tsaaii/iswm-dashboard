@@ -24,9 +24,15 @@ Open http://127.0.0.1:8080 and log in with **demo** / **demo1234**.
 
 ## Screens
 
-- **All plants:** online/offline (offline = no sync for 2 hours), last sync, today's inward and outward trips and tonnes, pending empty weights, number of cameras. Search box. Refreshes every minute.
+- **Plant status (the first page after login):** one card per plant, problems first. Each card is green *Working*, yellow *Needs attention* or red *Offline*, and says why in plain words, for example *Weighbridge not connected*, *Camera problem: Tipping floor*, *Cloud sync error*, *No contact since 15 Oct 08:15*. Each card shows:
+  - last seen, weighbridge on/off with the live weight, cameras working, records waiting to sync;
+  - today's inward and outward tonnes and trips, pending empty weights;
+  - who is on duty and the app version.
+
+  Filters: *All*, *Needs attention*, *Offline*, *Working*. *Table* view for many plants. Below the cards: **trips per hour today across all plants** and **inward today by plant**. Refreshes every 30 seconds.
 - **One plant:**
-  - live weighbridge reading and today's totals;
+  - status strip (same reasons as the card), live weighbridge reading and today's totals;
+  - **Day** (pick any day, or Today / Yesterday): **trips per hour** with the busiest hour, **shift totals**, inward by **waste type** and **source**, outward by **material** and **destination**, **busiest vehicles**, **waiting for empty weight**, and **Download trips (CSV)** for Excel;
   - **Cameras**: one button per camera, named as at the plant, plus **All**. Low data, Normal or Sharper; Stop. Nothing is sent from the plant until you press a camera, and a view stops by itself after 10 minutes;
   - **Last 14 days**: inward and outward tonnes per day. Hover for the numbers, or press *Show as table*;
   - **Trips**: any day, inward/outward filter, search by vehicle or ticket.
@@ -67,6 +73,7 @@ To deploy a new version later, run the same command **without** `--set-env-vars`
 
 ## Cost and data
 
+- **Status:** each plant tells the relay how it is (weighbridge, cameras, records waiting, version) with the check-in it already makes every ~20 seconds; about 200 bytes. The dashboard asks the relay for all plants in one call every 15 seconds. No Firestore reads. A plant counts as online if it checked in within a minute, or, if remote view is off at that plant, synced within 2 hours.
 - **Overview:** reads one record per plant (today's totals, written by the plant at each sync), at most once a minute however many people are looking. 123 plants ≈ 123 Firestore reads a minute while the page is open, about 180,000 for a full day left open. Firestore's free tier is 50,000 a day; past that it costs about $0.06 per 100,000 reads.
 - **Plant page:** reads the trips of the chosen day and the last 14 days, kept 2 minutes.
 - **Cameras:** the picture goes plant → relay → dashboard → browser. Normal quality is about 0.1–0.2 GB an hour per camera watched; *All* on a plant with 4 cameras is 4 times that. Nothing is sent while nobody watches.
@@ -74,7 +81,7 @@ To deploy a new version later, run the same command **without** `--set-env-vars`
 
 ## Needs from the ISWM side
 
-ISWM 1.5.0 or newer on the plant PCs: it sends camera names and today's totals with each sync. Older plants still show, with zero totals and no camera names until they update.
+ISWM 1.5.0 or newer on the plant PCs: it sends camera names, today's totals and trips per hour with each sync, and its status with each relay check-in (turn on *Remote camera view* at the plant for the live status). Older plants still show, with zero totals and no camera names until they update.
 
 ## Files
 

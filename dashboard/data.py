@@ -59,6 +59,8 @@ DEMO_SITES = [
     ("iswm-anantapur", "ISWM Anantapur", "Lions Group", ["Front cam", "Back cam", "Tipping floor"]),
 ]
 OFFLINE = {"iswm-kurnool"}  # one site shown offline, as happens in real life
+# and a couple with problems, so the status board has something to show
+DEMO_TROUBLE = {"iswm-guntur": {"wb": False}, "iswm-tirupati": {"cam_problems": ["Compost yard"]}}
 IN_TYPES = ["Mixed", "Mixed", "Mixed", "Wet", "Dry"]
 SOURCES = ["Residential", "Residential", "Commercial"]
 MATERIALS = [("Compost", "Farmer buyer"), ("RDF bales", "Ultratech cement"), ("Recyclables", "Sri Sai traders"),
@@ -123,7 +125,10 @@ class DemoData:
 
     def _totals(self, rows):
         done = [x for x in rows if x["net_kg"] is not None]
-        return {"in_trips": sum(1 for x in done if x["dir"] == "in"),
+        hours = {"in": [0] * 24, "out": [0] * 24}
+        for x in rows:
+            hours[x["dir"]][int(x["time"][11:13])] += 1
+        return {"in_by_hour": hours["in"], "out_by_hour": hours["out"],"in_trips": sum(1 for x in done if x["dir"] == "in"),
                 "in_kg": sum(x["net_kg"] for x in done if x["dir"] == "in"),
                 "out_trips": sum(1 for x in done if x["dir"] == "out"),
                 "out_kg": sum(x["net_kg"] for x in done if x["dir"] == "out"),
@@ -135,9 +140,15 @@ class DemoData:
             r = _rng(sid, now.strftime("%Y%m%d%H"))
             offline = sid in OFFLINE
             last = now - (dt.timedelta(hours=5, minutes=r.randint(0, 50)) if offline else dt.timedelta(minutes=r.randint(1, 10)))
+            status = None if offline else {"ver": "1.5.0", "wb": True, "kg": 0, "stable": True, "cams": len(cams),
+                                           "cam_problems": [], "queued": r.randint(0, 6), "sync": "synced",
+                                           "operator": r.choice(["Ramesh K.", "Lakshmi P.", "Suresh B."]),
+                                           **DEMO_TROUBLE.get(sid, {})}
+            seen = None if offline else now - dt.timedelta(seconds=r.randint(2, 25))
             out.append({"id": sid, "name": name, "company": company, "online": not offline,
                         "last_sync": last.isoformat(timespec="minutes"), "cameras": _cam_ids(cams),
-                        "today": {"date": today().isoformat(), **self._totals(self.trips(sid, today(), today()))}})
+                        "today": {"date": today().isoformat(), **self._totals(self.trips(sid, today(), today()))},
+                        "health": health(not offline, seen or last, status)})
         return out
 
     def site(self, sid):
@@ -214,7 +225,33 @@ class ApiData:
         r.raise_for_status()
         return r.json()
 
+    def relay_status(self):
+        """Every plant's live check-in from the relay (one call; the relay keeps it in memory)."""
+        def load():
+            try:
+                return self._get("/v1/live/status")
+            except Exception:
+                return {}  # older relay, or relay down: fall back to sync times
+        return self.cache.get("relay-status", 15, load)
+
     def sites(self):
+        live = self.relay_status()
+        now = dt.datetime.now(TZ)
+        out = []
+        for s in self._sites():
+            lv = live.get(s["id"])
+            synced = s["online"]
+            if lv:  # the relay hears from a plant every ~20 s: better than sync time, which waits for new records
+                seen = now - dt.timedelta(seconds=lv.get("seen_s") or 0)
+                s = dict(s, online=bool(lv.get("online")), health=health(bool(lv.get("online")), seen, lv.get("status")))
+                if lv.get("cams") and not s["cameras"]:
+                    s["cameras"] = lv["cams"]
+            else:
+                s = dict(s, health=health(synced, _parse_time(s["last_sync"]), None))
+            out.append(s)
+        return out
+
+    def _sites(self):
         def load():
             now = dt.datetime.now(TZ)
             out = []
@@ -230,7 +267,9 @@ class ApiData:
                             "cameras": [[c.get("id"), c.get("name")] for c in (s.get("cameras") or []) if c.get("id")],
                             "today": {"in_trips": t.get("in_trips", 0), "in_kg": t.get("in_kg", 0),
                                       "out_trips": t.get("out_trips", 0), "out_kg": t.get("out_kg", 0),
-                                      "pending": t.get("pending", 0)}})
+                                      "pending": t.get("pending", 0),
+                                      "in_by_hour": t.get("in_by_hour") or [0] * 24,
+                                      "out_by_hour": t.get("out_by_hour") or [0] * 24}})
             return sorted(out, key=lambda x: x["name"])
         return self.cache.get("sites", 60, load)
 
@@ -287,6 +326,29 @@ class ApiData:
             finally:
                 r.close()
         return gen()
+
+
+def health(online, seen, status):
+    """A plant's state for the status board: ok, attention (online but something is wrong) or offline,
+    with the reasons in plain words."""
+    st = status or {}
+    reasons = []
+    if online and status:
+        if not st.get("wb", True):
+            reasons.append("Weighbridge not connected")
+        for name in st.get("cam_problems") or []:
+            reasons.append("Camera problem: %s" % name)
+        if st.get("sync") == "error":
+            reasons.append("Cloud sync error")
+        if (st.get("queued") or 0) > 100:
+            reasons.append("%d records waiting to sync" % st["queued"])
+    state = "offline" if not online else "attention" if reasons else "ok"
+    if not online:
+        reasons = ["No contact since %s" % seen.strftime("%d %b %H:%M") if seen else "Never connected"]
+    return {"state": state, "reasons": reasons, "seen": seen.isoformat(timespec="seconds") if seen else None,
+            "wb": st.get("wb") if status else None, "kg": st.get("kg"), "cams": st.get("cams"),
+            "cam_problems": st.get("cam_problems") or [], "queued": st.get("queued"), "sync": st.get("sync"),
+            "version": st.get("ver"), "operator": st.get("operator")}
 
 
 def _parse_time(v):

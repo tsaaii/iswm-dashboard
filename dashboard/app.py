@@ -7,7 +7,9 @@ Settings (environment variables):
     DASHBOARD_USERS  who may log in (see auth.py)
     SECRET_KEY       long random text that signs the login cookie
 """
+import csv
 import datetime as dt
+import io
 import os
 import re
 import secrets
@@ -19,6 +21,54 @@ from . import auth
 from .data import ApiData, DemoData, today
 
 SITE_ID = re.compile(r"[a-z0-9-]{1,60}")
+SHIFTS = [s.strip() for s in os.environ.get("SHIFT_STARTS", "06:00,14:00,22:00").split(",") if s.strip()]
+
+
+def day_report(trips):
+    """Everything the plant page shows for one day, from that day's trips."""
+    def agg(rows):
+        done = [r for r in rows if r["net_kg"] is not None]
+        return {"trips": len(rows), "done": len(done), "kg": sum(r["net_kg"] for r in done)}
+
+    def by(rows, key):
+        groups = {}
+        for r in rows:
+            groups.setdefault(r.get(key) or "Other", []).append(r)
+        return sorted(({"label": k, **agg(v)} for k, v in groups.items()), key=lambda x: -x["kg"])
+
+    ins = [t for t in trips if t["dir"] == "in"]
+    outs = [t for t in trips if t["dir"] == "out"]
+    hours = [{"hour": h, "in": sum(1 for t in ins if int(t["time"][11:13]) == h),
+              "out": sum(1 for t in outs if int(t["time"][11:13]) == h),
+              "in_kg": sum(t["net_kg"] or 0 for t in ins if int(t["time"][11:13]) == h),
+              "out_kg": sum(t["net_kg"] or 0 for t in outs if int(t["time"][11:13]) == h)} for h in range(24)]
+    mins = [int(x[:2]) * 60 + int(x[3:5]) for x in SHIFTS]
+
+    def shift_of(t):
+        m = int(t["time"][11:13]) * 60 + int(t["time"][14:16])
+        idx = [i for i, start in enumerate(mins) if m >= start]
+        return idx[-1] if idx else len(mins) - 1  # before the first start = the night shift
+
+    shifts = []
+    for i, start in enumerate(SHIFTS):
+        end = SHIFTS[(i + 1) % len(SHIFTS)]
+        shifts.append({"label": "Shift %d" % (i + 1), "time": start + "–" + end,
+                       "in": agg([t for t in ins if shift_of(t) == i]), "out": agg([t for t in outs if shift_of(t) == i])})
+    vehicles = {}
+    for t in trips:
+        v = vehicles.setdefault(t["vno"], {"vno": t["vno"], "trips": 0, "in_kg": 0, "out_kg": 0, "pending": 0})
+        v["trips"] += 1
+        if t["net_kg"] is None:
+            v["pending"] += 1
+        else:
+            v[t["dir"] + "_kg"] += t["net_kg"]
+    busiest = max(hours, key=lambda h: h["in"] + h["out"])
+    return {"in": agg(ins), "out": agg(outs), "hours": hours,
+            "busiest": busiest if busiest["in"] + busiest["out"] else None,
+            "shifts": shifts, "waste": by(ins, "what"), "source": by(ins, "where"),
+            "material": by(outs, "what"), "dest": by(outs, "where"),
+            "vehicles": sorted(vehicles.values(), key=lambda v: (-v["trips"], -(v["in_kg"] + v["out_kg"])))[:10],
+            "pending": [t for t in ins if t["net_kg"] is None]}
 CAM_ID = re.compile(r"front|back|cam[3-9]")
 
 
@@ -149,6 +199,40 @@ def create_app(source=None, users=None):
         except ValueError:
             abort(400)
         return jsonify({"date": day.isoformat(), "trips": app.data.trips(site_id, day, day)})
+
+    def day_arg():
+        try:
+            return dt.date.fromisoformat(request.args.get("date") or today().isoformat())
+        except ValueError:
+            abort(400)
+
+    @app.get("/api/sites/<site_id>/day")
+    @login_required
+    def api_day(site_id):
+        """Hourly trips, shifts, waste and material breakdowns, top vehicles and pending trips of one day."""
+        site_or_404(site_id)
+        day = day_arg()
+        return jsonify({"date": day.isoformat(), **day_report(app.data.trips(site_id, day, day))})
+
+    @app.get("/api/sites/<site_id>/trips.csv")
+    @login_required
+    def api_trips_csv(site_id):
+        site_or_404(site_id)
+        day = day_arg()
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["Date", "Time", "Ticket", "In/Out", "Vehicle", "Waste / material", "From / going to",
+                    "Gross kg", "Tare kg", "Net kg", "Status", "Operator"])
+        def cell(v):  # text starting with = + - @ would run as a formula in Excel
+            return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@") else v
+        for t in reversed(app.data.trips(site_id, day, day)):
+            w.writerow([cell(x) for x in (t["time"][:10], t["time"][11:16], t["id"],
+                                          "Inward" if t["dir"] == "in" else "Outward", t["vno"], t["what"], t["where"],
+                                          t["gross_kg"], t["tare_kg"], t["net_kg"],
+                                          "Complete" if t["net_kg"] is not None else "Tare pending", t["operator"])])
+        name = "%s-trips-%s.csv" % (site_id, day.isoformat())
+        return Response("\ufeff" + buf.getvalue(), mimetype="text/csv",  # BOM so Excel reads it as UTF-8
+                        headers={"Content-Disposition": 'attachment; filename="%s"' % name})
 
     @app.get("/api/sites/<site_id>/daily")
     @login_required

@@ -79,6 +79,38 @@ def test_demo_pages_trips_chart_and_camera():
     assert c.get("/cam/iswm-kurnool/front.mjpg").status_code == 404  # plant offline
 
 
+def test_status_board_hourly_shifts_and_csv():
+    c = create_app(DemoData()).test_client()
+    login(c, "demo", "demo1234")
+    sites = {s["id"]: s for s in c.get("/api/sites").get_json()["sites"]}
+    assert sites["iswm-kurnool"]["health"]["state"] == "offline"
+    assert sites["iswm-guntur"]["health"]["reasons"] == ["Weighbridge not connected"]
+    assert sites["iswm-tirupati"]["health"]["reasons"] == ["Camera problem: Compost yard"]
+    assert sites["iswm-donthali"]["health"]["state"] == "ok"
+    t = sites["iswm-donthali"]["today"]
+    assert len(t["in_by_hour"]) == 24 and sum(t["in_by_hour"]) + sum(t["out_by_hour"]) >= t["in_trips"] + t["out_trips"]
+    y = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    r = c.get("/api/sites/iswm-donthali/day?date=" + y).get_json()
+    trips = c.get("/api/sites/iswm-donthali/trips?date=" + y).get_json()["trips"]
+    assert len(r["hours"]) == 24 and sum(h["in"] + h["out"] for h in r["hours"]) == len(trips)
+    assert sum(s["in"]["trips"] + s["out"]["trips"] for s in r["shifts"]) == len(trips)  # every trip in one shift
+    assert r["in"]["kg"] == sum(x["kg"] for x in r["waste"]) == sum(x["kg"] for x in r["source"])
+    assert r["out"]["kg"] == sum(x["kg"] for x in r["material"])
+    assert len(r["vehicles"]) <= 10 and r["busiest"]["hour"] in range(24)
+    csv_text = c.get("/api/sites/iswm-donthali/trips.csv?date=" + y).get_data(as_text=True)
+    assert csv_text.startswith("\ufeffDate,Time,Ticket") and csv_text.count("\n") == len(trips) + 1
+    assert c.get("/api/sites/iswm-donthali/day?date=nonsense").status_code == 400
+
+
+def test_health_rules():
+    from dashboard.data import health
+    now = dt.datetime.now()
+    assert health(True, now, {"wb": True, "cam_problems": [], "queued": 3, "sync": "synced"})["state"] == "ok"
+    h = health(True, now, {"wb": True, "cam_problems": [], "queued": 500, "sync": "error"})
+    assert h["state"] == "attention" and h["reasons"] == ["Cloud sync error", "500 records waiting to sync"]
+    assert health(False, None, None)["reasons"] == ["Never connected"]
+
+
 def test_reads_the_real_iswm_api_and_passes_cameras_through():
     """Against a stand-in for cloud_api: same paths and answers, API key checked."""
     from flask import Flask, Response, jsonify, request
@@ -105,6 +137,12 @@ def test_reads_the_real_iswm_api_and_passes_cameras_through():
                          "waste_type": "Mixed", "source": "Residential", "gross_kg": 9000, "tare_kg": 6000,
                          "net_kg": 3000, "operator": "Ramesh"}])
 
+    @api.get("/v1/live/status")
+    def board():
+        return jsonify({"iswm-donthali": {"online": True, "seen_s": 4, "cams": [["front", "Front cam"]],
+                                          "status": {"ver": "1.5.0", "wb": False, "cams": 2, "cam_problems": [],
+                                                     "queued": 0, "sync": "synced", "operator": "Ramesh"}}})
+
     @api.get("/v1/sites/<site>/live/state")
     def state(site):
         return jsonify({"plant_online": True, "cams": [["front", "Front cam"], ["cam3", "Tipping floor"]],
@@ -123,6 +161,8 @@ def test_reads_the_real_iswm_api_and_passes_cameras_through():
         login(c, "boss", "Boss2026x")
         s = c.get("/api/sites").get_json()["sites"][0]
         assert s["online"] and s["today"]["in_kg"] == 12000 and s["cameras"][1] == ["cam3", "Tipping floor"]
+        assert s["health"]["state"] == "attention" and s["health"]["operator"] == "Ramesh"  # weighbridge off, from relay
+        assert s["today"]["in_by_hour"] == [0] * 24  # older plant without hourly counts still works
         assert c.get("/api/sites/iswm-donthali/trips").get_json()["trips"][0]["vno"] == "AP39TB1234"
         days = c.get("/api/sites/iswm-donthali/daily").get_json()["days"]
         assert days[-1]["in_kg"] == 3000 and days[-1]["date"] == today
