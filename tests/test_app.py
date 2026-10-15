@@ -178,7 +178,7 @@ def test_camera_link_shows_only_that_plant(tmp_path, monkeypatch):
 
     @relay.get("/v1/sites/<site>/live/<cam>.mjpg")
     def mjpg(site, cam):
-        return Response(iter([b"--frame\r\n\r\n\xff\xd8RELAY-" + cam.encode()]), mimetype="multipart/x-mixed-replace; boundary=frame")
+        return Response(iter([b"--frame\r\n\r\n\xff\xd8RELAY-" + cam.encode() + b"\xff\xd9\r\n"]), mimetype="multipart/x-mixed-replace; boundary=frame")
 
     srv = make_server("127.0.0.1", 0, relay, threaded=True)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -197,8 +197,17 @@ def test_camera_link_shows_only_that_plant(tmp_path, monkeypatch):
         y = (dt.date.today() - dt.timedelta(days=1)).isoformat()
         assert c.get("/api/trips?from=%s&to=%s" % (y, y)).get_json()["trips"]  # demo numbers for it
         cams = c.get("/api/cams/anantapur").get_json()
-        assert cams == {"cams": [["front", "Weighbridge"], ["cam3", "Tipping floor"]], "linked": True, "online": True}
+        assert cams == {"cams": [["front", "Weighbridge"], ["cam3", "Tipping floor"]], "linked": True, "online": True,
+                        "error": None}
         assert b"RELAY-cam3" in c.get("/cam/anantapur/cam3.mjpg").get_data()
+        # single pictures: the first ask starts the stream, then the newest picture comes back
+        import time
+        for _ in range(50):
+            r = c.get("/cam/anantapur/cam3.jpg")
+            if r.status_code == 200:
+                break
+            time.sleep(0.1)
+        assert r.status_code == 200 and r.data.startswith(b"\xff\xd8") and b"RELAY-cam3" in r.data
         # a Site login can't change links
         s = create_app(DemoData()).test_client()
         login(s, "nellore.site", "admin@sac")

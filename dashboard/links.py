@@ -59,6 +59,7 @@ class Links:
         self.folder = folder or os.environ.get("DASHBOARD_DATA") or os.path.join(os.getcwd(), "dashboard_data")
         self.path = os.path.join(self.folder, "links.json")
         self._lock = threading.Lock()
+        self._state = {}
         self.fixed = {}
         for item in filter(None, (fixed or "").split(";")):
             ulb, _, link = item.partition("=")
@@ -120,21 +121,26 @@ class Links:
         import requests
         return requests.get(l["base"] + path, headers={"X-API-Key": l["key"]}, **kw)
 
-    def cameras(self, ulb):
+    def state(self, ulb):
+        """{"cams": [[id, name], …], "online": bool, "error": text or None}, from the relay, kept 10 s."""
+        import time
+        hit = self._state.get(ulb)
+        if hit and time.monotonic() - hit[0] < 10:
+            return hit[1]
         l = self.get(ulb)
         try:
-            r = self._get(l, "/v1/sites/%s/live/state" % l["site"], timeout=10)
-            return (r.json().get("cams") or []) if r.status_code == 200 else []
+            r = self._get(l, "/v1/sites/%s/live/state" % l["site"], timeout=8)
+            if r.status_code == 401:
+                out = {"cams": [], "online": False, "error": "The relay refused the key in the link."}
+            elif r.status_code != 200:
+                out = {"cams": [], "online": False, "error": "The relay doesn't know %s." % l["site"]}
+            else:
+                d = r.json()
+                out = {"cams": d.get("cams") or [], "online": bool(d.get("plant_online")), "error": None}
         except Exception:
-            return []
-
-    def online(self, ulb):
-        l = self.get(ulb)
-        try:
-            r = self._get(l, "/v1/sites/%s/live/state" % l["site"], timeout=10)
-            return bool(r.status_code == 200 and r.json().get("plant_online"))
-        except Exception:
-            return False
+            out = {"cams": [], "online": False, "error": "Can't reach the relay. Check this PC's internet."}
+        self._state[ulb] = (time.monotonic(), out)
+        return out
 
     def camera(self, ulb, cam, quality):
         l = self.get(ulb)

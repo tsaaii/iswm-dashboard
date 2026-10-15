@@ -22,6 +22,7 @@ from functools import wraps
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
 
+from .frames import FrameHub
 from .links import LinkError, Links
 
 from . import auth, registry
@@ -43,6 +44,9 @@ def create_app(source=None, users=None):
     throttle = auth.Throttle()
     public_cache = Cache()
     app.links = Links(os.environ.get("CAMERA_LINKS", ""))
+    # one stream per camera on this server; pages fetch single pictures (see frames.py)
+    app.frames = FrameHub(lambda ulb, cam, q: app.links.camera(ulb, cam, q) if app.links.get(ulb)
+                          else app.data.camera(ulb, cam, q))
 
     def ops():
         """Plants in operation: the linked ones if any camera link is set, else the package sheet's."""
@@ -213,7 +217,8 @@ def create_app(source=None, users=None):
         if ulb not in my_ops():
             abort(404)
         if app.links.get(ulb):
-            return jsonify({"cams": app.links.cameras(ulb), "linked": True, "online": app.links.online(ulb)})
+            st = app.links.state(ulb)
+            return jsonify({"cams": st["cams"], "linked": True, "online": st["online"], "error": st["error"]})
         return jsonify({"cams": app.data.cameras(ulb), "linked": False})
 
     # camera links (Configure cameras): only for All-sites logins -------------------------------
@@ -253,6 +258,18 @@ def create_app(source=None, users=None):
         app.links.remove(ulb)
         public_cache._d.clear()
         return jsonify({"links": app.links.public()})
+
+    @app.get("/cam/<ulb>/<cam>.jpg")
+    @login_required
+    def camera_frame(ulb, cam):
+        """The newest picture of one camera (204 while the first one is on its way)."""
+        if ulb not in my_ops() or not CAM_ID.fullmatch(cam):
+            abort(404)
+        q = request.args.get("q") if request.args.get("q") in ("low", "normal", "high") else "normal"
+        jpeg, age = app.frames.latest(ulb, cam, q)
+        if jpeg is None:
+            return Response(status=204)
+        return Response(jpeg, mimetype="image/jpeg", headers={"X-Age": "%.1f" % age})
 
     @app.get("/cam/<ulb>/<cam>.mjpg")
     @login_required

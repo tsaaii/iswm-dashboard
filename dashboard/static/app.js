@@ -33,8 +33,13 @@
   let n = 0;
   const act = fn => { const k = 'a' + (n++); actions[k] = fn; return k; };
   function set(p) { Object.assign(S, p); draw(); }
+  let pendingDraw = false;
   function draw() {
-    const keepFocus = document.activeElement && document.activeElement.id;
+    // a redraw closes an open drop-down, so wait until the person has picked
+    const a = document.activeElement;
+    if (a && a.tagName === 'SELECT' && root.contains(a)) { pendingDraw = true; return; }
+    pendingDraw = false;
+    const keepFocus = a && a.id;
     actions = {}; n = 0;
     const html = PAGE === 'landing' ? landing() : app();
     const form = document.getElementById('logout-form');
@@ -43,8 +48,14 @@
     if (keepFocus && document.getElementById(keepFocus)) document.getElementById(keepFocus).focus();
   }
   root.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && !b.disabled && actions[b.dataset.act]) actions[b.dataset.act](e); });
+  root.addEventListener('focusout', e => { if (pendingDraw && e.target.tagName === 'SELECT') setTimeout(draw, 0); });
   root.addEventListener('input', e => { if (e.target.id === 'link-url') S.linkUrl = e.target.value; });
-  root.addEventListener('change', e => { const b = e.target.closest('[data-chg]'); if (b && actions[b.dataset.chg]) actions[b.dataset.chg](e); });
+  root.addEventListener('change', e => {
+    const b = e.target.closest('[data-chg]');
+    if (e.target.tagName === 'SELECT') e.target.blur();  // picked: the page may redraw again
+    if (b && actions[b.dataset.chg]) actions[b.dataset.chg](e);
+    else if (pendingDraw) draw();
+  });
   window.addEventListener('resize', () => { clearTimeout(window._rs); window._rs = setTimeout(draw, 120); });
 
   // shared pieces ------------------------------------------------------------------------------------
@@ -192,7 +203,7 @@
     const sub = {overview: 'Collection, processing and dispatch' + (ids.length === 1 ? ' at ISWM ' + byId(ids[0]).name : ' across ' + ids.length + ' operational plants'), sites: sc.length + ' ULBs in your access · ' + ops.length + ' operational', cameras: 'Live views from the plant', reports: 'Build a trip report and download it'}[tab];
     h += '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px 24px"><div style="flex:1 1 280px;min-width:0"><h1 style="margin:0;font-size:28px;font-weight:700;letter-spacing:-.015em;line-height:1.2">' + esc(title) + '</h1><div style="color:var(--ink-500);font-size:14px;margin-top:4px">' + esc(sub) + '</div></div>';
     const siteOpts = (single ? [] : [{v: 'ALL', l: 'All operational plants (' + ops.length + ')'}]).concat(ops.map(id => ({v: id, l: 'ISWM ' + byId(id).name})));
-    const sel = (id, list, value, chg, dis) => '<div style="position:relative;width:240px;max-width:100%"><select id="' + id + '" data-chg="' + chg + '"' + (dis ? ' disabled' : '') + ' style="appearance:none;-webkit-appearance:none;width:100%;min-width:0;height:36px;padding:0 32px 0 12px;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--white);font:inherit;font-size:14px;color:var(--ink-900);cursor:pointer;box-shadow:var(--shadow-sm)">' + options(list, value) + '</select>' + chevron(10, 'var(--ink-500)') + '</div>';
+    const sel = (id, list, value, chg, dis) => dis ? '<div style="width:240px;max-width:100%;height:36px;display:flex;align-items:center;padding:0 12px;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--white);font-size:14px;font-weight:700;color:var(--ink-900);box-shadow:var(--shadow-sm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc((list.find(o => o.v === value) || list[0] || {}).l || '') + '</div>' : '<div style="position:relative;width:240px;max-width:100%"><select id="' + id + '" data-chg="' + chg + '"' + (dis ? ' disabled' : '') + ' style="appearance:none;-webkit-appearance:none;width:100%;min-width:0;height:36px;padding:0 32px 0 12px;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--white);font:inherit;font-size:14px;color:var(--ink-900);cursor:pointer;box-shadow:var(--shadow-sm)">' + options(list, value) + '</select>' + chevron(10, 'var(--ink-500)') + '</div>';
     if (tab === 'overview' || tab === 'sites') {
       h += '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">' + (tab === 'overview' ? sel('site-sel', siteOpts, site, act(e => set({site: e.target.value})), single) : '') +
         '<div style="display:flex;gap:2px;padding:3px;background:var(--ink-050);border-radius:10px">' + PERIODS.map(([k, l]) => '<button data-act="' + act(() => set({period: k})) + '" style="border:0;border-radius:var(--radius-pill);padding:5px 12px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;background:' + (period === k ? 'var(--white)' : 'transparent') + ';color:' + (period === k ? 'var(--ink-900)' : 'var(--ink-500)') + ';box-shadow:' + (period === k ? '0 1px 2px rgba(24,24,27,.12)' : 'none') + '">' + l + '</button>').join('') + '</div></div>';
@@ -288,14 +299,14 @@
   // cameras: the plant's cameras, with the names given at the plant, through the ISWM relay
   const CAMS = {};
   function camerasTab(cs) {
-    if (!CAMS[cs]) { CAMS[cs] = {list: null}; getJSON('/api/cams/' + cs).then(d => { CAMS[cs] = {list: d.cams, linked: d.linked, online: d.online}; draw(); }).catch(() => { CAMS[cs].list = []; draw(); }); }
+    if (!CAMS[cs]) { CAMS[cs] = {list: null}; getJSON('/api/cams/' + cs).then(d => { CAMS[cs] = {list: d.cams, linked: d.linked, online: d.online, error: d.error}; draw(); }).catch(() => { CAMS[cs].list = []; draw(); }); }
     const td0 = trips([cs], ME.today, ME.today) || [], last = td0.slice().sort((a, b) => b.min - a.min)[0], m = metrics(td0, 1, [cs]);
     const off = CAMS[cs].linked ? !CAMS[cs].online : (!syncOk(cs) && syncMin(cs) != null);
     const stats = [['Trips today', fN(m.trips)], ['Received today', fT(m.recv) + ' t'], ['Last weighment', last ? hm(last.min) + ' · ' + last.veh : '—'], ['Last sync', syncText(cs)]];
     const list = CAMS[cs].list, q = S.camQ || 'normal';
     const now = nowI(), ts = ymd(now) + ' ' + p2(now.getHours()) + ':' + p2(now.getMinutes());
     let h = card(stats.map(([l, v]) => '<div style="flex:1 1 170px;padding:12px 20px;border-right:1px solid var(--ink-050);border-top:1px solid var(--ink-050);margin-top:-1px;display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:13px;color:var(--ink-500)">' + esc(l) + '</span><span style="font-size:14px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums">' + esc(v) + '</span></div>').join(''), 'display:flex;flex-wrap:wrap;overflow:hidden');
-    const note = CAMS[cs].linked && off ? 'Plant is offline: it is not connected to the relay right now' : list && list.length ? 'Pictures come from the plant only while this page is open, and stop after 10 minutes' : list ? 'This plant has not shared its cameras yet' : 'Asking the plant for its cameras…';
+    const note = CAMS[cs].error ? CAMS[cs].error : CAMS[cs].linked && off ? 'Plant is offline: it is not connected to the relay right now' : list && list.length ? 'Pictures come from the plant only while this page is open, and pause after 10 minutes' : list ? 'This plant has not shared its cameras yet' : 'Asking the plant for its cameras…';
     h += '<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px"><div style="font-size:13px;color:var(--ink-500)">' + esc(note) + '</div>' +
       '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">' +
       (ME.can_configure ? '<button class="h-green050" data-act="' + act(() => { set({camCfg: !S.camCfg, linkErr: '', linkMsg: ''}); if (!S.camCfg) return; getJSON('/api/links').then(d => { LINKS = d; draw(); }).catch(() => {}); }) + '" style="height:36px;padding:0 16px;border:1px solid var(--ink-200);border-radius:var(--radius-pill);background:var(--white);color:var(--ink-900);font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">' + (S.camCfg ? 'Close settings' : 'Configure cameras') + '</button>' : '') +
@@ -303,7 +314,7 @@
     if (S.camCfg) h += linksPanel();
     h += '<div id="cam-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:12px">' + (list || []).map((c, i) =>
       '<div style="position:relative;aspect-ratio:16/9;background:var(--ink-900);border-radius:var(--radius-lg);overflow:hidden;color:#ffffff">' +
-      '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--ink-300);font-size:13px;text-align:center;padding:0 24px">' + (off ? 'Plant is not connected' : 'Connecting to the plant… (up to 20 s)') + '</div>' +
+      '<div data-msg="' + esc(c[0]) + '" style="position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;color:var(--ink-300);font-size:13px;text-align:center;padding:0 24px">' + (off ? 'Plant is not connected' : 'Asking the plant for pictures… (up to 20 s)') + '</div>' +
       (off ? '' : '<img data-cam="' + esc(c[0]) + '" alt="' + esc(c[1]) + '" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">') +
       '<div style="position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:13px;font-weight:700;background:rgba(0,0,0,.55);padding:3px 10px;border-radius:999px;white-space:nowrap">' + esc(c[1]) + '</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.04em;background:' + (off ? 'rgba(255,255,255,.18)' : '#dc2626') + ';padding:3px 8px;border-radius:999px"><span style="width:6px;height:6px;border-radius:50%;background:#ffffff"></span>' + (off ? 'OFFLINE' : 'LIVE') + '</span></div>' +
       '<div style="position:absolute;bottom:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:flex-end;gap:8px;flex-wrap:wrap"><span style="font-family:var(--font-mono);font-size:12px;background:rgba(0,0,0,.55);padding:3px 8px;border-radius:6px">' + esc(off ? 'Last sync ' + syncText(cs) : ts) + '</span>' + (i < 2 && last ? '<span style="font-size:12px;background:rgba(0,0,0,.55);padding:3px 8px;border-radius:6px">' + esc(last.veh + ' · ' + (last.net != null ? fT(last.net / 1000) + ' t' : 'tare pending')) + '</span>' : '') + '</div></div>').join('') + '</div>';
@@ -334,22 +345,45 @@
         : (LINKS ? '<div style="font-size:13px;color:var(--ink-500)">No links yet: the dashboard shows every operational plant.</div>' : ''));
   }
 
-  // keep each camera's stream open across redraws, so the picture doesn't restart every few seconds
-  const STREAMS = {};
+  // Each camera: fetch its newest picture about once a second (single pictures, not an endless stream,
+  // so the browser's few connections stay free for the rest of the page). Pauses after 10 minutes.
+  const FEEDS = {};
+  const PAUSE_MS = 10 * 60 * 1000;
   function attachCams(cs, q) {
     document.querySelectorAll('#cam-grid img[data-cam]').forEach(img => {
-      const key = cs + '/' + img.dataset.cam + '/' + q;
-      let s = STREAMS[key];
-      if (!s) {
-        s = STREAMS[key] = new Image();
-        s.src = '/cam/' + encodeURIComponent(cs) + '/' + encodeURIComponent(img.dataset.cam) + '.mjpg?q=' + q;
+      const cam = img.dataset.cam, key = cs + '/' + cam + '/' + q;
+      let f = FEEDS[key];
+      if (!f) {
+        f = FEEDS[key] = {img: new Image(), url: null, started: Date.now(), alive: true, got: false};
+        const loop = () => {
+          if (!f.alive) return;
+          if (Date.now() - f.started > PAUSE_MS) { f.paused = true; showMsg(cam, 'Paused after 10 minutes to save data. Click to continue.', true); return; }
+          fetch('/cam/' + encodeURIComponent(cs) + '/' + encodeURIComponent(cam) + '.jpg?q=' + q + '&n=' + Date.now(), {credentials: 'same-origin', cache: 'no-store'})
+            .then(r => r.status === 200 ? r.blob() : null)
+            .then(b => { if (b && f.alive) { const old = f.url; f.url = URL.createObjectURL(b); f.img.src = f.url; if (old) URL.revokeObjectURL(old); if (!f.got) { f.got = true; showMsg(cam, ''); } } })
+            .catch(() => {})
+            .finally(() => { if (f.alive) f.t = setTimeout(loop, 1000); });
+        };
+        f.resume = () => { f.started = Date.now(); f.paused = false; showMsg(cam, f.got ? '' : 'Asking the plant for pictures… (up to 20 s)'); loop(); };
+        loop();
       }
-      s.alt = img.alt;
-      s.setAttribute('style', img.getAttribute('style'));
-      s.setAttribute('data-cam', img.dataset.cam);
-      img.replaceWith(s);
+      f.img.alt = img.alt;
+      f.img.setAttribute('style', img.getAttribute('style'));
+      f.img.setAttribute('data-cam', cam);
+      img.replaceWith(f.img);
+      if (f.got && !f.paused) showMsg(cam, '');
+      if (f.paused) showMsg(cam, 'Paused after 10 minutes to save data. Click to continue.', true);
     });
-    Object.keys(STREAMS).forEach(k => { if (!document.body.contains(STREAMS[k])) { STREAMS[k].src = ''; delete STREAMS[k]; } });
+    Object.keys(FEEDS).forEach(k => { const f = FEEDS[k]; if (!document.body.contains(f.img)) { f.alive = false; clearTimeout(f.t); if (f.url) URL.revokeObjectURL(f.url); delete FEEDS[k]; } });
+  }
+  function showMsg(cam, text, resume) {
+    const m = document.querySelector('#cam-grid [data-msg="' + cam + '"]');
+    if (!m) return;
+    m.textContent = text;
+    m.style.zIndex = text ? '2' : '0';
+    m.style.background = text && resume ? 'rgba(0,0,0,.6)' : 'transparent';
+    m.style.cursor = resume ? 'pointer' : 'default';
+    m.onclick = resume ? () => { Object.values(FEEDS).forEach(f => { if (f.paused) f.resume(); }); } : null;
   }
 
   // reports
@@ -357,7 +391,7 @@
   function reportsTab(ops, single) {
     const t = parse(ME.today);
     const rFrom = S.rFrom || ymd(addD(t, -6)), rTo = S.rTo || ME.today, rGroup = S.rGroup || 'vehicle', rDir = S.rDir || 'all';
-    const rSite = single ? ops[0] : (S.rSite || 'ALL'), rids = rSite === 'ALL' ? ops : [rSite];
+    const rSite = single ? ops[0] : (S.rSite || 'ALL'), rids = rSite === 'ALL' ? ops : [rSite], name = id => byId(id).name;
     let tr = trips(rids, rFrom, rTo);
     const siteOpts = (single ? [] : [{v: 'ALL', l: 'All operational plants (' + ops.length + ')'}]).concat(ops.map(id => ({v: id, l: 'ISWM ' + byId(id).name})));
     const presets = [['Today', ME.today, ME.today], ['Yesterday', ymd(addD(t, -1)), ymd(addD(t, -1))], ['Last 7 days', ymd(addD(t, -6)), ME.today], ['This month', ymd(new Date(t.getFullYear(), t.getMonth(), 1)), ME.today], ['This year', t.getFullYear() + '-01-01', ME.today]];
@@ -370,12 +404,13 @@
       '<input id="r-to" type="date" aria-label="To" value="' + rTo + '" max="' + ME.today + '" data-chg="' + act(e => e.target.value && set({rTo: e.target.value})) + '" style="' + input + '"></div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:4px 12px">' + presets.map(([l, f, to]) => '<button class="h-textgreen7" data-act="' + act(() => set({rFrom: f, rTo: to})) + '" style="border:0;background:none;padding:0;font-size:13px;color:var(--green-600);font-weight:700;cursor:pointer">' + l + '</button>').join('') + '</div></div>' +
       '<div style="display:flex;flex-direction:column;gap:10px;min-width:0"><div style="font-size:13px;font-weight:700;color:var(--ink-700)">Filter</div>' +
-      '<div style="position:relative"><select id="r-site" aria-label="Plant" data-chg="' + act(e => set({rSite: e.target.value})) + '"' + (single ? ' disabled' : '') + ' style="' + selStyle + '">' + options(siteOpts, rSite) + '</select>' + chevron(10, 'var(--ink-500)') + '</div>' +
+      (single ? '<div style="height:36px;display:flex;align-items:center;padding:0 12px;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--white);font-size:14px;font-weight:700;box-shadow:var(--shadow-sm)">ISWM ' + esc(name(rSite)) + '</div>'
+        : '<div style="position:relative"><select id="r-site" aria-label="Plant" data-chg="' + act(e => set({rSite: e.target.value})) + '" style="' + selStyle + '">' + options(siteOpts, rSite) + '</select>' + chevron(10, 'var(--ink-500)') + '</div>') +
       '<div style="position:relative"><select id="r-dir" aria-label="Direction" data-chg="' + act(e => set({rDir: e.target.value})) + '" style="' + selStyle + '">' + options([{v: 'all', l: 'Inward and outward'}, {v: 'IN', l: 'Inward only'}, {v: 'OUT', l: 'Outward only'}], rDir) + '</select>' + chevron(10, 'var(--ink-500)') + '</div></div>',
       'padding:20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:20px 28px');
     if (!tr) { REPORT = null; return h + loading; }
     if (rDir !== 'all') tr = tr.filter(x => x.dir === rDir);
-    const R = 'right', name = id => byId(id).name;
+    const R = 'right';
     let cols, rows, total;
     if (rGroup === 'trip') {
       cols = [['Ticket'], ['Date'], ['Time'], ['Site'], ['Vehicle'], ['Direction'], ['Material'], ['Gross kg', R], ['Tare kg', R], ['Net kg', R], ['Shift'], ['Destination']];
