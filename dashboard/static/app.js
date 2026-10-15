@@ -43,6 +43,7 @@
     if (keepFocus && document.getElementById(keepFocus)) document.getElementById(keepFocus).focus();
   }
   root.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && !b.disabled && actions[b.dataset.act]) actions[b.dataset.act](e); });
+  root.addEventListener('input', e => { if (e.target.id === 'link-url') S.linkUrl = e.target.value; });
   root.addEventListener('change', e => { const b = e.target.closest('[data-chg]'); if (b && actions[b.dataset.chg]) actions[b.dataset.chg](e); });
   window.addEventListener('resize', () => { clearTimeout(window._rs); window._rs = setTimeout(draw, 120); });
 
@@ -287,14 +288,19 @@
   // cameras: the plant's cameras, with the names given at the plant, through the ISWM relay
   const CAMS = {};
   function camerasTab(cs) {
-    if (!CAMS[cs]) { CAMS[cs] = {list: null}; getJSON('/api/cams/' + cs).then(d => { CAMS[cs].list = d.cams; draw(); }).catch(() => { CAMS[cs].list = []; draw(); }); }
-    const td0 = trips([cs], ME.today, ME.today) || [], last = td0.slice().sort((a, b) => b.min - a.min)[0], m = metrics(td0, 1, [cs]), off = !syncOk(cs) && syncMin(cs) != null;
+    if (!CAMS[cs]) { CAMS[cs] = {list: null}; getJSON('/api/cams/' + cs).then(d => { CAMS[cs] = {list: d.cams, linked: d.linked, online: d.online}; draw(); }).catch(() => { CAMS[cs].list = []; draw(); }); }
+    const td0 = trips([cs], ME.today, ME.today) || [], last = td0.slice().sort((a, b) => b.min - a.min)[0], m = metrics(td0, 1, [cs]);
+    const off = CAMS[cs].linked ? !CAMS[cs].online : (!syncOk(cs) && syncMin(cs) != null);
     const stats = [['Trips today', fN(m.trips)], ['Received today', fT(m.recv) + ' t'], ['Last weighment', last ? hm(last.min) + ' · ' + last.veh : '—'], ['Last sync', syncText(cs)]];
     const list = CAMS[cs].list, q = S.camQ || 'normal';
     const now = nowI(), ts = ymd(now) + ' ' + p2(now.getHours()) + ':' + p2(now.getMinutes());
     let h = card(stats.map(([l, v]) => '<div style="flex:1 1 170px;padding:12px 20px;border-right:1px solid var(--ink-050);border-top:1px solid var(--ink-050);margin-top:-1px;display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:13px;color:var(--ink-500)">' + esc(l) + '</span><span style="font-size:14px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums">' + esc(v) + '</span></div>').join(''), 'display:flex;flex-wrap:wrap;overflow:hidden');
-    h += '<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px"><div style="font-size:13px;color:var(--ink-500)">' + (list && list.length ? 'Pictures come from the plant only while this page is open, and stop after 10 minutes' : list ? 'This plant has not shared its cameras yet' : 'Asking the plant for its cameras…') + '</div>' +
-      '<div style="display:flex;gap:2px;padding:3px;background:var(--ink-050);border-radius:10px">' + [['low', 'Low data'], ['normal', 'Normal'], ['high', 'Sharper']].map(([k, l]) => '<button data-act="' + act(() => set({camQ: k})) + '" style="border:0;border-radius:var(--radius-pill);padding:5px 12px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;background:' + (q === k ? 'var(--white)' : 'transparent') + ';color:' + (q === k ? 'var(--ink-900)' : 'var(--ink-500)') + ';box-shadow:' + (q === k ? '0 1px 2px rgba(24,24,27,.12)' : 'none') + '">' + l + '</button>').join('') + '</div></div>';
+    const note = CAMS[cs].linked && off ? 'Plant is offline: it is not connected to the relay right now' : list && list.length ? 'Pictures come from the plant only while this page is open, and stop after 10 minutes' : list ? 'This plant has not shared its cameras yet' : 'Asking the plant for its cameras…';
+    h += '<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px"><div style="font-size:13px;color:var(--ink-500)">' + esc(note) + '</div>' +
+      '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">' +
+      (ME.can_configure ? '<button class="h-green050" data-act="' + act(() => { set({camCfg: !S.camCfg, linkErr: '', linkMsg: ''}); if (!S.camCfg) return; getJSON('/api/links').then(d => { LINKS = d; draw(); }).catch(() => {}); }) + '" style="height:36px;padding:0 16px;border:1px solid var(--ink-200);border-radius:var(--radius-pill);background:var(--white);color:var(--ink-900);font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">' + (S.camCfg ? 'Close settings' : 'Configure cameras') + '</button>' : '') +
+      '<div style="display:flex;gap:2px;padding:3px;background:var(--ink-050);border-radius:10px">' + [['low', 'Low data'], ['normal', 'Normal'], ['high', 'Sharper']].map(([k, l]) => '<button data-act="' + act(() => set({camQ: k})) + '" style="border:0;border-radius:var(--radius-pill);padding:5px 12px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;background:' + (q === k ? 'var(--white)' : 'transparent') + ';color:' + (q === k ? 'var(--ink-900)' : 'var(--ink-500)') + ';box-shadow:' + (q === k ? '0 1px 2px rgba(24,24,27,.12)' : 'none') + '">' + l + '</button>').join('') + '</div></div></div>';
+    if (S.camCfg) h += linksPanel();
     h += '<div id="cam-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:12px">' + (list || []).map((c, i) =>
       '<div style="position:relative;aspect-ratio:16/9;background:var(--ink-900);border-radius:var(--radius-lg);overflow:hidden;color:#ffffff">' +
       '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--ink-300);font-size:13px;text-align:center;padding:0 24px">' + (off ? 'Plant is not connected' : 'Connecting to the plant… (up to 20 s)') + '</div>' +
@@ -304,6 +310,30 @@
     setTimeout(() => attachCams(cs, q), 0);
     return h;
   }
+  // Configure cameras: paste a plant's live link from the ISWM relay
+  let LINKS = null;
+  function linksPanel() {
+    const field = 'width:100%;min-width:0;height:36px;padding:0 10px;border:1px solid var(--ink-200);border-radius:var(--radius-md);background:var(--white);font:inherit;font-size:13px;color:var(--ink-900);outline:none';
+    const post = (method, url, body) => fetch(url, {method, credentials: 'same-origin', headers: {'Content-Type': 'application/json', 'X-CSRF': root.dataset.csrf}, body: body ? JSON.stringify(body) : undefined}).then(r => r.json().then(d => { if (!r.ok) throw new Error(d.error || 'Could not save.'); return d; }));
+    const save = () => {
+      const link = document.getElementById('link-url').value, ulb = document.getElementById('link-ulb').value;
+      post('POST', '/api/links', {link, ulb}).then(d => { set({linkErr: '', linkMsg: 'Saved. Showing ' + d.ulb + ' …'}); setTimeout(() => location.reload(), 600); }).catch(e => set({linkErr: e.message}));
+    };
+    const ulbs = LINKS ? LINKS.ulbs : [];
+    return '<div style="background:var(--white);border:1px solid var(--ink-100);border-radius:var(--radius-lg);box-shadow:var(--shadow-card);padding:20px;display:flex;flex-direction:column;gap:14px">' +
+      '<div style="display:flex;flex-direction:column;gap:2px"><div style="font-size:16px;font-weight:700">Camera links</div><div style="font-size:13px;color:var(--ink-500)">Paste a plant\'s live link from the ISWM relay, like https://iswm-api-….run.app/live/iswm-ananthapur?key=…. Once a link is set, the dashboard shows only the linked plants, with their cameras live.</div></div>' +
+      '<div style="display:grid;grid-template-columns:' + (W() >= 760 ? 'minmax(0,1fr) minmax(0,220px) auto' : 'minmax(0,1fr)') + ';gap:8px;align-items:center">' +
+      '<input id="link-url" aria-label="Plant live link" value="' + esc(S.linkUrl || '') + '" placeholder="https://iswm-api-….run.app/live/iswm-ananthapur?key=…" style="' + field + ';font-family:var(--font-mono);font-size:12px">' +
+      '<div style="position:relative"><select id="link-ulb" aria-label="ULB" data-chg="' + act(e => { S.linkUlb = e.target.value; }) + '" style="' + field + ';appearance:none;-webkit-appearance:none;padding-right:28px;cursor:pointer"><option value="">ULB: find from the link</option>' + ulbs.map(u => '<option value="' + esc(u.id) + '"' + (S.linkUlb === u.id ? ' selected' : '') + '>' + esc(u.name + ' · Pkg ' + u.pk) + '</option>').join('') + '</select>' + chevron(10) + '</div>' +
+      '<button class="h-green7" data-act="' + act(save) + '" style="height:36px;padding:0 18px;border:0;border-radius:var(--radius-pill);background:var(--green-600);color:var(--white);font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">Save link</button></div>' +
+      (S.linkErr ? '<div role="alert" style="font-size:13px;color:var(--red-600);background:var(--red-100);border-radius:var(--radius-md);padding:10px 12px">' + esc(S.linkErr) + '</div>' : '') +
+      (S.linkMsg ? '<div style="font-size:13px;color:var(--green-700)">' + esc(S.linkMsg) + '</div>' : '') +
+      (LINKS && LINKS.links.length ? '<div style="display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--ink-100);padding-top:14px">' + LINKS.links.map(l =>
+        '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px"><b style="min-width:140px">ISWM ' + esc(l.name) + '</b><span style="flex:1;min-width:0;font-family:var(--font-mono);font-size:12px;color:var(--ink-500);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(l.link) + '</span>' +
+        (l.fixed ? '<span style="font-size:12px;color:var(--ink-500)">set on the server</span>' : '<button data-act="' + act(() => post('DELETE', '/api/links/' + l.ulb).then(() => location.reload()).catch(e => set({linkErr: e.message}))) + '" style="height:30px;padding:0 12px;border:1px solid var(--ink-200);border-radius:999px;background:var(--white);color:var(--red-600);font-size:13px;font-weight:700;cursor:pointer">Remove</button>') + '</div>').join('') + '</div>'
+        : (LINKS ? '<div style="font-size:13px;color:var(--ink-500)">No links yet: the dashboard shows every operational plant.</div>' : ''));
+  }
+
   // keep each camera's stream open across redraws, so the picture doesn't restart every few seconds
   const STREAMS = {};
   function attachCams(cs, q) {

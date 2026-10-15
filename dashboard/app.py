@@ -12,6 +12,7 @@ Settings (environment variables):
     DASHBOARD_USERS  who may sign in, and what each sees (see auth.py)
     SECRET_KEY       long random text that signs the login cookie
     SITE_MAP         only if a plant's site id isn't "iswm-<ulb>": "nellore=my-id,badvel=..."
+    CAMERA_LINKS     optional fixed camera links (see links.py); admins can also add them on the Cameras tab
 """
 import datetime as dt
 import os
@@ -20,6 +21,8 @@ import secrets
 from functools import wraps
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
+
+from .links import LinkError, Links
 
 from . import auth, registry
 from .data import ApiData, Cache, DemoData, today
@@ -39,6 +42,11 @@ def create_app(source=None, users=None):
                       PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=12))
     throttle = auth.Throttle()
     public_cache = Cache()
+    app.links = Links(os.environ.get("CAMERA_LINKS", ""))
+
+    def ops():
+        """Plants in operation: the linked ones if any camera link is set, else the package sheet's."""
+        return app.links.ulbs() or registry.OPS
 
     # --- who is signed in, and what they may see ----------------------------------------------------
     def current():
@@ -49,11 +57,16 @@ def create_app(source=None, users=None):
         return registry.parse_scope(app.users[current()]["scope"])
 
     def my_ulbs():
-        sc = scope()
-        return [u for u in registry.ULBS if registry.in_scope(sc, u)]
+        sc, linked = scope(), app.links.ulbs()
+        out = [u for u in registry.ULBS if registry.in_scope(sc, u) and (not linked or u["id"] in linked)]
+        return [dict(u, status="op") if u["id"] in linked else u for u in out]
 
     def my_ops():
-        return [u["id"] for u in my_ulbs() if u["status"] == "op"]
+        o = ops()
+        return [u["id"] for u in my_ulbs() if u["id"] in o]
+
+    def can_configure():
+        return current() is not None and scope()["kind"] == "all"
 
     def login_required(fn):
         @wraps(fn)
@@ -105,7 +118,8 @@ def create_app(source=None, users=None):
         """Totals for the landing page: trips, tonnes and trips per hour. No vehicle numbers or tickets."""
         day = min(day_arg("day"), today())
         ulb = request.args.get("ulb", "ALL")
-        ids = registry.OPS if ulb not in registry.OPS else [ulb]
+        o = ops()
+        ids = o if ulb not in o else [ulb]
 
         def make():
             ins = [t for t in app.data.trips(ids, day, day) if t["dir"] == "IN"]
@@ -115,8 +129,8 @@ def create_app(source=None, users=None):
             last = max((t["min"] for t in ins), default=None) if day == today() else None
             return {"day": day.isoformat(), "today": today().isoformat(), "trips": len(ins),
                     "kg": sum(t["net"] for t in ins if t["net"] is not None), "hours": hours, "last_min": last}
-        out = public_cache.get(("live", day, ulb), 30, make)
-        return jsonify({**out, "ops": [registry.BY_ID[i] for i in registry.OPS], "total_ulbs": len(registry.ULBS),
+        out = public_cache.get(("live", day, ulb, tuple(o)), 30, make)
+        return jsonify({**out, "ops": [registry.BY_ID[i] for i in o], "total_ulbs": len(registry.ULBS),
                         "op_start": registry.OP_START, "demo": app.data.demo})
 
     @app.get("/api/public/upcoming")
@@ -173,7 +187,7 @@ def create_app(source=None, users=None):
         access, label = registry.describe(scope())
         return jsonify({"user": current(), "who": u["who"], "access": access, "scope": label, "ulbs": my_ulbs(),
                         "ops": my_ops(), "today": today().isoformat(), "op_start": registry.OP_START,
-                        "demo": app.data.demo})
+                        "demo": app.data.demo, "can_configure": can_configure(), "linked": bool(app.links.ulbs())})
 
     def ids_arg():
         ops = my_ops()
@@ -198,7 +212,47 @@ def create_app(source=None, users=None):
     def api_cams(ulb):
         if ulb not in my_ops():
             abort(404)
-        return jsonify({"cams": app.data.cameras(ulb)})
+        if app.links.get(ulb):
+            return jsonify({"cams": app.links.cameras(ulb), "linked": True, "online": app.links.online(ulb)})
+        return jsonify({"cams": app.data.cameras(ulb), "linked": False})
+
+    # camera links (Configure cameras): only for All-sites logins -------------------------------
+    def check_api_csrf():
+        sent, want = request.headers.get("X-CSRF", ""), session.get("csrf", "")
+        if not want or not secrets.compare_digest(sent, want):
+            abort(400, "Reload the page and try again.")
+
+    @app.get("/api/links")
+    @login_required
+    def api_links():
+        if not can_configure():
+            abort(403)
+        return jsonify({"links": app.links.public(), "ulbs": [{"id": u["id"], "name": u["name"], "pk": u["pk"]}
+                                                              for u in registry.ULBS]})
+
+    @app.post("/api/links")
+    @login_required
+    def api_links_add():
+        if not can_configure():
+            abort(403)
+        check_api_csrf()
+        body = request.get_json(silent=True) or {}
+        try:
+            ulb = app.links.add(body.get("link", ""), body.get("ulb") or None)
+        except LinkError as e:
+            return jsonify({"error": str(e)}), 400
+        public_cache._d.clear()
+        return jsonify({"ulb": ulb, "links": app.links.public()})
+
+    @app.delete("/api/links/<ulb>")
+    @login_required
+    def api_links_remove(ulb):
+        if not can_configure():
+            abort(403)
+        check_api_csrf()
+        app.links.remove(ulb)
+        public_cache._d.clear()
+        return jsonify({"links": app.links.public()})
 
     @app.get("/cam/<ulb>/<cam>.mjpg")
     @login_required
@@ -208,7 +262,7 @@ def create_app(source=None, users=None):
         if ulb not in my_ops() or not CAM_ID.fullmatch(cam):
             abort(404)
         q = request.args.get("q") if request.args.get("q") in ("low", "normal", "high") else "normal"
-        stream = app.data.camera(ulb, cam, q)
+        stream = app.links.camera(ulb, cam, q) if app.links.get(ulb) else app.data.camera(ulb, cam, q)
         if stream is None:
             abort(404)
         return Response(stream, mimetype="multipart/x-mixed-replace; boundary=frame",

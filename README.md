@@ -30,6 +30,20 @@ python -m dashboard.app
 ```
 Open http://127.0.0.1:8080. Sign in with **admin** / **admin@sac** (all sites). The design's other demo logins use the same password: **nellore.site** (Site), **iway.agency** (Agency, package 1), **dyee.varaprasad** (Multi-site, packages 7–10).
 
+## Show one plant's live cameras (camera links)
+
+Sign in with an **All sites** login (in demo: admin / admin@sac) → **Cameras** → **Configure cameras**. Paste the plant's live link from the ISWM relay, for example:
+```
+https://iswm-api-….run.app/live/iswm-ananthapur?key=VIEWER-KEY
+```
+and press **Save link**. The ULB is found from the link (`iswm-ananthapur` → Anantapur); pick it from the list if it isn't.
+
+From then on the dashboard shows **only the linked plants**, on the landing page and every tab. Their cameras come live from the relay, and their numbers come from the ISWM API, or from demo data if `ISWM_API_URL` isn't set. Remove the link to go back to all plants.
+
+- Links are saved in `dashboard_data/links.json` next to where you start the dashboard (`DASHBOARD_DATA` changes the folder).
+- On Cloud Run that folder is wiped at each restart, so set links there with `CAMERA_LINKS="anantapur=https://…/live/iswm-ananthapur?key=…"` (several separated by `;`).
+- The viewer key stays on the server; the settings panel shows it masked.
+
 ## The ULB list
 
 The 107 ULBs, 10 packages, agencies, DyEEs, awarded TPD and each ULB's status are in `dashboard/registry.py`, from the package progress sheet. When a plant starts, move its name into that package's `op` list; it then appears on the landing page, in Overview and in Sites.

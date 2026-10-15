@@ -154,3 +154,59 @@ def test_reads_the_real_iswm_api_and_passes_cameras_through():
         assert "dash-key" not in c.get("/app").get_data(as_text=True)
     finally:
         srv.shutdown()
+
+
+def test_camera_link_shows_only_that_plant(tmp_path, monkeypatch):
+    """Paste a plant's live link: only that plant shows, numbers are demo data, cameras come from the relay."""
+    from flask import Flask, Response, jsonify, request
+    from werkzeug.serving import make_server
+    from dashboard.links import LinkError, guess_ulb, parse
+    monkeypatch.setenv("DASHBOARD_DATA", str(tmp_path))
+    assert guess_ulb("iswm-ananthapur") == "anantapur" and guess_ulb("iswm-nellore") == "nellore"
+    with pytest.raises(LinkError):
+        parse("https://x.run.app/v1/sites?key=a")
+    with pytest.raises(LinkError):
+        parse("https://x.run.app/live/iswm-ananthapur")  # no key
+
+    relay = Flask("relay")
+
+    @relay.get("/v1/sites/<site>/live/state")
+    def state(site):
+        if request.headers.get("X-API-Key") != "viewkey" or site != "iswm-ananthapur":
+            return jsonify({"error": "no"}), 401
+        return jsonify({"plant_online": True, "cams": [["front", "Weighbridge"], ["cam3", "Tipping floor"]]})
+
+    @relay.get("/v1/sites/<site>/live/<cam>.mjpg")
+    def mjpg(site, cam):
+        return Response(iter([b"--frame\r\n\r\n\xff\xd8RELAY-" + cam.encode()]), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+    srv = make_server("127.0.0.1", 0, relay, threaded=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        app = create_app(DemoData())
+        c = app.test_client()
+        login(c, "admin", "admin@sac")
+        csrf = re.search(r'data-csrf="([^"]+)"', c.get("/app").get_data(as_text=True)).group(1)
+        link = "http://127.0.0.1:%d/live/iswm-ananthapur?key=viewkey" % srv.server_port
+        assert c.post("/api/links", json={"link": link}).status_code == 400  # no CSRF header
+        r = c.post("/api/links", json={"link": link}, headers={"X-CSRF": csrf}).get_json()
+        assert r["ulb"] == "anantapur" and "viewkey" not in str(r)  # key masked
+        me = c.get("/api/me").get_json()
+        assert me["ops"] == ["anantapur"] and [u["id"] for u in me["ulbs"]] == ["anantapur"]
+        assert c.get("/api/public/live").get_json()["ops"][0]["id"] == "anantapur"
+        y = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+        assert c.get("/api/trips?from=%s&to=%s" % (y, y)).get_json()["trips"]  # demo numbers for it
+        cams = c.get("/api/cams/anantapur").get_json()
+        assert cams == {"cams": [["front", "Weighbridge"], ["cam3", "Tipping floor"]], "linked": True, "online": True}
+        assert b"RELAY-cam3" in c.get("/cam/anantapur/cam3.mjpg").get_data()
+        # a Site login can't change links
+        s = create_app(DemoData()).test_client()
+        login(s, "nellore.site", "admin@sac")
+        assert s.get("/api/links").status_code == 403
+        # saved: a restart keeps it; removing it brings all plants back
+        app2 = create_app(DemoData())
+        assert app2.links.ulbs() == ["anantapur"]
+        c.delete("/api/links/anantapur", headers={"X-CSRF": csrf})
+        assert len(c.get("/api/me").get_json()["ops"]) == 9
+    finally:
+        srv.shutdown()
